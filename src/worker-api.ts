@@ -1,25 +1,127 @@
-import { z } from "zod"
-import type { WorkerConfig } from "./worker-config.js"
+import { z } from "zod";
+import type { WorkerConfig } from "./worker-config.js";
 
-const RegisterResponse = z.object({ workerId: z.string().min(1) })
-const Job = z.object({ jobId: z.string().min(1), attemptId: z.string().min(1), payload: z.record(z.string(), z.unknown()).default({}) })
-const ClaimResponse = z.object({ job: Job.nullable() })
-export type WorkerJob = z.infer<typeof Job>
-export type WorkerApi = Readonly<{ register(): Promise<void>; heartbeat(): Promise<void>; claim(): Promise<WorkerJob | null>; complete(jobId: string, result: unknown): Promise<void>; fail(jobId: string, message: string): Promise<void> }>
-type Fetcher = (input: URL | RequestInfo, init?: RequestInit) => Promise<Response>
+const RegisterResponse = z.object({ workerId: z.string().min(1) });
+const Job = z.object({
+  jobId: z.string().min(1),
+  attemptId: z.string().min(1),
+  payload: z.record(z.string(), z.unknown()).default({}),
+});
+const ClaimResponse = z.object({ job: Job.nullable() });
+export type WorkerJob = z.infer<typeof Job>;
+export type WorkerApi = Readonly<{
+  register(): Promise<void>;
+  heartbeat(): Promise<void>;
+  claim(): Promise<WorkerJob | null>;
+  complete(jobId: string, result: unknown): Promise<void>;
+  fail(jobId: string, message: string): Promise<void>;
+}>;
+type Fetcher = (
+  input: URL | RequestInfo,
+  init?: RequestInit,
+) => Promise<Response>;
 
-export function createWorkerApi(config: WorkerConfig, fetcher: Fetcher = fetch): WorkerApi {
-  async function post<T>(path: string, body: unknown, schema: z.ZodType<T>): Promise<T> {
-    const response = await fetcher(`${config.apiBaseUrl}${path}`, { method: "POST", headers: { authorization: `Bearer ${config.token}`, "content-type": "application/json" }, body: JSON.stringify(body) })
-    if (!response.ok) throw new Error(`worker API request failed (${response.status})`)
-    return schema.parse(await response.json())
+export class WorkerApiError extends Error {
+  readonly path: string;
+  readonly status: number | null;
+
+  constructor(path: string, status: number | null, message: string) {
+    super(message);
+    this.name = "WorkerApiError";
+    this.path = path;
+    this.status = status;
   }
-  const prefix = `/v1/workers/${encodeURIComponent(config.workerId)}`
+}
+
+const preview = (body: string): string =>
+  body.replace(/\s+/gu, " ").trim().slice(0, 120);
+const isJson = (contentType: string): boolean =>
+  contentType.toLowerCase().includes("application/json");
+
+export function createWorkerApi(
+  config: WorkerConfig,
+  fetcher: Fetcher = fetch,
+): WorkerApi {
+  async function post<T>(
+    path: string,
+    body: unknown,
+    schema: z.ZodType<T>,
+  ): Promise<T> {
+    let response: Response;
+    try {
+      response = await fetcher(`${config.apiBaseUrl}${path}`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${config.token}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify(body),
+      });
+    } catch (error) {
+      if (error instanceof Error)
+        throw new WorkerApiError(
+          path,
+          null,
+          `worker API fetch failed for ${path}; check RVS_API_BASE_URL and network reachability (${error.message})`,
+        );
+      throw error;
+    }
+    const responseBody = await response.text();
+    if (!response.ok)
+      throw new WorkerApiError(
+        path,
+        response.status,
+        `worker API request failed (${response.status}) for ${path}: ${preview(responseBody)}`,
+      );
+    const contentType = response.headers.get("content-type") ?? "";
+    if (!isJson(contentType))
+      throw new WorkerApiError(
+        path,
+        response.status,
+        `worker API returned non-JSON (${contentType || "no content-type"}) for ${path}; check RVS_API_BASE_URL points to the API server, not the web server`,
+      );
+    try {
+      return schema.parse(JSON.parse(responseBody));
+    } catch (error) {
+      if (error instanceof SyntaxError)
+        throw new WorkerApiError(
+          path,
+          response.status,
+          `worker API returned invalid JSON for ${path}: ${preview(responseBody)}`,
+        );
+      throw error;
+    }
+  }
+  const prefix = `/v1/workers/${encodeURIComponent(config.workerId)}`;
   return {
-    register: async () => { await post("/v1/workers/register", { workerId: config.workerId, capabilities: config.capabilities }, RegisterResponse) },
-    heartbeat: async () => { await post(`${prefix}/heartbeat`, { capabilities: config.capabilities }, RegisterResponse) },
+    register: async () => {
+      await post(
+        "/v1/workers/register",
+        { workerId: config.workerId, capabilities: config.capabilities },
+        RegisterResponse,
+      );
+    },
+    heartbeat: async () => {
+      await post(
+        `${prefix}/heartbeat`,
+        { capabilities: config.capabilities },
+        RegisterResponse,
+      );
+    },
     claim: async () => (await post(`${prefix}/claim`, {}, ClaimResponse)).job,
-    complete: async (jobId, result) => { await post(`${prefix}/jobs/${encodeURIComponent(jobId)}/complete`, { result }, z.object({ ok: z.literal(true) })) },
-    fail: async (jobId, message) => { await post(`${prefix}/jobs/${encodeURIComponent(jobId)}/fail`, { message }, z.object({ ok: z.literal(true) })) },
-  }
+    complete: async (jobId, result) => {
+      await post(
+        `${prefix}/jobs/${encodeURIComponent(jobId)}/complete`,
+        { result },
+        z.object({ ok: z.literal(true) }),
+      );
+    },
+    fail: async (jobId, message) => {
+      await post(
+        `${prefix}/jobs/${encodeURIComponent(jobId)}/fail`,
+        { message },
+        z.object({ ok: z.literal(true) }),
+      );
+    },
+  };
 }

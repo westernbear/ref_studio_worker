@@ -9,7 +9,7 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     environment:
-      RVS_API_BASE_URL: ${RVS_API_BASE_URL:-http://host.docker.internal:3100}
+      RVS_API_BASE_URL: ${RVS_API_BASE_URL:-http://host.docker.internal:3200}
       RVS_WORKER_TOKEN: ${RVS_WORKER_TOKEN:-}
       RVS_WORKER_CAPABILITIES: ${RVS_WORKER_CAPABILITIES:-compiler,renderer}
     command: ["pnpm", "start"]
