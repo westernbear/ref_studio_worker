@@ -13,6 +13,7 @@ services:
       RVS_API_BASE_URL: ${RVS_API_BASE_URL:-http://host.docker.internal:3200}
       RVS_WORKER_TOKEN: ${RVS_WORKER_TOKEN:-}
       RVS_WORKER_CAPABILITIES: ${RVS_WORKER_CAPABILITIES:-compiler,renderer}
+      RVS_API_REQUEST_TIMEOUT_MS: ${RVS_API_REQUEST_TIMEOUT_MS:-30000}
     command: ["pnpm", "start"]
   worker-smoke:
     build:

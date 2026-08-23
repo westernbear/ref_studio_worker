@@ -9,6 +9,7 @@ const config: WorkerConfig = {
   capabilities: ["compiler"],
   heartbeatIntervalMs: 10_000,
   pollIntervalMs: 10_000,
+  apiRequestTimeoutMs: 30_000,
 };
 
 describe("worker entrypoint", () => {

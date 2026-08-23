@@ -14,6 +14,7 @@ const config: WorkerConfig = {
   capabilities: ["compiler"],
   heartbeatIntervalMs: 10_000,
   pollIntervalMs: 10_000,
+  apiRequestTimeoutMs: 30_000,
 };
 
 describe("worker daemon API", () => {
@@ -73,6 +74,32 @@ describe("worker daemon API", () => {
     );
   });
 
+  it("times out stalled worker API requests", async () => {
+    const api = createWorkerApi(
+      { ...config, apiRequestTimeoutMs: 1 },
+      async (_input, init) => {
+        const signal = init?.signal;
+        if (!signal) throw new Error("missing abort signal");
+        return await new Promise<Response>((_resolve, reject) => {
+          signal.addEventListener(
+            "abort",
+            () =>
+              reject(
+                signal.reason instanceof Error
+                  ? signal.reason
+                  : new Error("request aborted"),
+              ),
+            { once: true },
+          );
+        });
+      },
+    );
+
+    await expect(api.complete("job-a", {})).rejects.toThrow(
+      "request timed out after 1ms",
+    );
+  });
+
   it("reports completed jobs after a successful handler", async () => {
     const calls: string[] = [];
     const infoSpy = vi.spyOn(console, "info").mockImplementation(() => {});
@@ -95,6 +122,7 @@ describe("worker daemon API", () => {
       },
     };
     const controller = new AbortController();
+    let logLines: string[] = [];
     try {
       await runWorkerDaemon(
         { ...config, heartbeatIntervalMs: 1_000, pollIntervalMs: 1_000 },
@@ -105,10 +133,16 @@ describe("worker daemon API", () => {
           return { ok: true };
         },
       );
+      logLines = infoSpy.mock.calls.map((call) => String(call[0]));
     } finally {
       infoSpy.mockRestore();
     }
     expect(calls).toEqual(["register", "heartbeat", "claim", "complete:job-a"]);
+    expect(logLines).toEqual([
+      expect.stringContaining('"event":"worker.job.claimed"'),
+      expect.stringContaining('"event":"worker.job.completing"'),
+      expect.stringContaining('"event":"worker.job.completed"'),
+    ]);
   });
 
   it("logs claimed jobs before running the handler", async () => {

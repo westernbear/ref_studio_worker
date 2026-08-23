@@ -48,6 +48,14 @@ export function createWorkerApi(
     schema: z.ZodType<T>,
   ): Promise<T> {
     let response: Response;
+    const controller = new AbortController();
+    const timeout = setTimeout(
+      () =>
+        controller.abort(
+          new Error(`request timed out after ${config.apiRequestTimeoutMs}ms`),
+        ),
+      config.apiRequestTimeoutMs,
+    );
     try {
       response = await fetcher(`${config.apiBaseUrl}${path}`, {
         method: "POST",
@@ -56,6 +64,7 @@ export function createWorkerApi(
           "content-type": "application/json",
         },
         body: JSON.stringify(body),
+        signal: controller.signal,
       });
     } catch (error) {
       if (error instanceof Error)
@@ -65,6 +74,8 @@ export function createWorkerApi(
           `worker API fetch failed for ${path}; check RVS_API_BASE_URL and network reachability (${error.message})`,
         );
       throw error;
+    } finally {
+      clearTimeout(timeout);
     }
     const responseBody = await response.text();
     if (!response.ok)
