@@ -1,6 +1,8 @@
 services:
   worker:
     restart: always
+    init: true
+    stop_grace_period: 30s
     build:
       context: .
       dockerfile: Dockerfile
@@ -14,8 +16,11 @@ services:
       RVS_WORKER_TOKEN: ${RVS_WORKER_TOKEN:-}
       RVS_WORKER_CAPABILITIES: ${RVS_WORKER_CAPABILITIES:-compiler,renderer}
       RVS_API_REQUEST_TIMEOUT_MS: ${RVS_API_REQUEST_TIMEOUT_MS:-30000}
-    command: ["pnpm", "start"]
+      RVS_MEDIA_REQUEST_TIMEOUT_MS: ${RVS_MEDIA_REQUEST_TIMEOUT_MS:-1800000}
+      RVS_HEARTBEAT_INTERVAL_MS: ${RVS_HEARTBEAT_INTERVAL_MS:-30000}
+      RVS_POLL_INTERVAL_MS: ${RVS_POLL_INTERVAL_MS:-5000}
   worker-smoke:
+    profiles: ["smoke"]
     build:
       context: .
       dockerfile: Dockerfile
@@ -23,4 +28,12 @@ services:
     environment:
       CI: "true"
       RVS_NO_NETWORK: "1"
-    command: ["pnpm", "compiler:smoke"]
+    command:
+      - /bin/sh
+      - -ec
+      - |
+        /opt/rvs/bin/ffmpeg -version >/dev/null
+        /opt/rvs/bin/ffprobe -version >/dev/null
+        /opt/chrome/chrome --version
+        /opt/compiler-venv/bin/python -m unittest compiler.test_pipeline
+        /opt/compiler-venv/bin/python -c 'from compiler.pipeline import verify_models, load_models; verify_models(); models = load_models(); assert set(models) == {"torch", "rvm", "midas", "ocr"}'

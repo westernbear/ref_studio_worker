@@ -1,0 +1,7 @@
+{
+  "include": ["compiler"],
+  "typeCheckingMode": "standard",
+  "pythonVersion": "3.12",
+  "reportMissingImports": "none",
+  "reportMissingTypeStubs": "none"
+}

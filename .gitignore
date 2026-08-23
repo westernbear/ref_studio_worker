@@ -1,5 +1,9 @@
 node_modules/
+.pnpm-store/
 .env
 dist/
 .turbo/
 .cache/
+__pycache__/
+*.py[cod]
+compiler/.venv/

@@ -1,0 +1,15 @@
+{
+  "AuthoringIR": {
+    "schema": "authoring-ir-v1"
+  },
+  "SceneIR": {
+    "schema": "scene-ir-v1",
+    "audio": {
+      "sampleRateHz": 48000,
+      "channels": 2
+    }
+  },
+  "BrowserPassSpec": {
+    "schema": "browser-pass-spec-v1"
+  }
+}

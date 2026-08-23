@@ -1,10 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { createWorkerApi } from "./worker-api.js";
-import {
-  runWorkerDaemon,
-  WORKER_JOB_HANDLER_FAILED,
-  WORKER_JOB_HANDLER_NOT_IMPLEMENTED,
-} from "./worker-daemon.js";
+import { runWorkerDaemon, WORKER_JOB_HANDLER_FAILED } from "./worker-daemon.js";
 import type { WorkerConfig } from "./worker-config.js";
 
 const config: WorkerConfig = {
@@ -15,6 +11,7 @@ const config: WorkerConfig = {
   heartbeatIntervalMs: 10_000,
   pollIntervalMs: 10_000,
   apiRequestTimeoutMs: 30_000,
+  mediaRequestTimeoutMs: 1_800_000,
 };
 
 describe("worker daemon API", () => {
@@ -50,6 +47,68 @@ describe("worker daemon API", () => {
       "Bearer secret-token",
     );
     expect(await requests[0]?.text()).not.toContain("secret-token");
+  });
+
+  it("downloads source bytes, reports progress, and uploads rendered media", async () => {
+    const requests: Request[] = [];
+    const api = createWorkerApi(config, async (input, init) => {
+      const request = new Request(input, init);
+      requests.push(request);
+      const path = new URL(request.url).pathname;
+      if (path.endsWith("/source"))
+        return new Response(Uint8Array.from([1, 2, 3]), {
+          headers: { "content-type": "video/mp4" },
+        });
+      if (path.endsWith("artifact"))
+        return Response.json({
+          artifactId: "artifact-a",
+          sha256: "a".repeat(64),
+          sizeBytes: 3,
+        });
+      return Response.json({ ok: true });
+    });
+    const signal = new AbortController().signal;
+
+    await expect(api.downloadSource("job-a", signal)).resolves.toEqual(
+      Uint8Array.from([1, 2, 3]),
+    );
+    await api.reportProgress(
+      "job-a",
+      {
+        phase: "prepare",
+        stage: "ffprobe",
+        fraction: 0.2,
+        framesProcessed: null,
+        framesTotal: null,
+      },
+      signal,
+    );
+    await expect(
+      api.uploadArtifact("job-a", Uint8Array.from([4, 5, 6]), signal),
+    ).resolves.toMatchObject({ artifactId: "artifact-a", sizeBytes: 3 });
+    await expect(
+      api.uploadPreview("job-a", Uint8Array.from([7, 8, 9]), signal),
+    ).resolves.toMatchObject({ artifactId: "artifact-a", sizeBytes: 3 });
+
+    expect(
+      requests.map(
+        (request) => `${request.method} ${new URL(request.url).pathname}`,
+      ),
+    ).toEqual([
+      "GET /v1/workers/worker-test/jobs/job-a/source",
+      "POST /v1/workers/worker-test/jobs/job-a/progress",
+      "POST /v1/workers/worker-test/jobs/job-a/artifact",
+      "POST /v1/workers/worker-test/jobs/job-a/preview-artifact",
+    ]);
+    expect(requests[2]?.headers.get("content-type")).toBe(
+      "application/octet-stream",
+    );
+    expect(new Uint8Array(await requests[2]!.arrayBuffer())).toEqual(
+      Uint8Array.from([4, 5, 6]),
+    );
+    expect(new Uint8Array(await requests[3]!.arrayBuffer())).toEqual(
+      Uint8Array.from([7, 8, 9]),
+    );
   });
 
   it("explains HTML responses as an API base URL misconfiguration", async () => {
@@ -149,6 +208,7 @@ describe("worker daemon API", () => {
       fail: async () => {
         calls.push("fail");
       },
+      acknowledgeCancellation: async () => {},
     };
     const controller = new AbortController();
     let logLines: string[] = [];
@@ -186,6 +246,7 @@ describe("worker daemon API", () => {
       }),
       complete: async () => {},
       fail: async () => {},
+      acknowledgeCancellation: async () => {},
     };
     const controller = new AbortController();
     let logLine = "";
@@ -204,37 +265,6 @@ describe("worker daemon API", () => {
     expect(logLine).toContain('"attemptId":"attempt-a"');
   });
 
-  it("reports not implemented for the default handler", async () => {
-    const failures: string[] = [];
-    const infoSpy = vi.spyOn(console, "info").mockImplementation(() => {});
-    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-    const controller = new AbortController();
-    const api = {
-      register: async () => {},
-      heartbeat: async () => {},
-      claim: async () => {
-        controller.abort();
-        return { jobId: "job-a", attemptId: "attempt-a", payload: {} };
-      },
-      complete: async () => {},
-      fail: async (_jobId: string, message: string) => {
-        failures.push(message);
-      },
-    };
-    let logLine = "";
-    try {
-      await runWorkerDaemon(config, api, controller.signal);
-      logLine = String(errorSpy.mock.calls[0]?.[0]);
-    } finally {
-      infoSpy.mockRestore();
-      errorSpy.mockRestore();
-    }
-    expect(failures).toEqual([WORKER_JOB_HANDLER_NOT_IMPLEMENTED]);
-    expect(logLine).toContain('"event":"worker.job.failed"');
-    expect(logLine).toContain('"jobId":"job-a"');
-    expect(logLine).toContain(WORKER_JOB_HANDLER_NOT_IMPLEMENTED);
-  });
-
   it("reports a stable failure without exposing handler errors", async () => {
     const failures: string[] = [];
     const infoSpy = vi.spyOn(console, "info").mockImplementation(() => {});
@@ -251,6 +281,7 @@ describe("worker daemon API", () => {
       fail: async (_jobId: string, message: string) => {
         failures.push(message);
       },
+      acknowledgeCancellation: async () => {},
     };
     const controller = new AbortController();
     let logLine = "";
@@ -274,6 +305,67 @@ describe("worker daemon API", () => {
     expect(logLine).not.toContain("secret-token");
   });
 
+  it("acknowledges API cancellation instead of reporting a failed job", async () => {
+    const controller = new AbortController();
+    const paths: string[] = [];
+    const infoSpy = vi.spyOn(console, "info").mockImplementation(() => {});
+    const api = createWorkerApi(config, async (input) => {
+      const path = new URL(input.toString()).pathname;
+      paths.push(path);
+      if (path.endsWith("/claim"))
+        return Response.json({
+          job: { jobId: "job-a", attemptId: "attempt-a", payload: {} },
+        });
+      if (path.endsWith("/progress"))
+        return Response.json(
+          {
+            error: {
+              code: "CANCEL_REQUESTED",
+              message: "The request could not be completed.",
+            },
+          },
+          { status: 409 },
+        );
+      if (path.endsWith("/cancelled")) {
+        controller.abort();
+        return Response.json({ ok: true });
+      }
+      return Response.json({ workerId: "worker-test" });
+    });
+    let logLines: string[] = [];
+    try {
+      await runWorkerDaemon(config, api, controller.signal, async (job) => {
+        await api.reportProgress(
+          job.jobId,
+          {
+            phase: "prepare",
+            stage: "evidence",
+            fraction: 0.5,
+            framesProcessed: 60,
+            framesTotal: 120,
+          },
+          controller.signal,
+        );
+      });
+      logLines = infoSpy.mock.calls.map((call) => String(call[0]));
+    } finally {
+      infoSpy.mockRestore();
+    }
+
+    expect(paths).toEqual([
+      "/v1/workers/register",
+      "/v1/workers/worker-test/heartbeat",
+      "/v1/workers/worker-test/claim",
+      "/v1/workers/worker-test/jobs/job-a/progress",
+      "/v1/workers/worker-test/jobs/job-a/cancelled",
+    ]);
+    expect(logLines).toEqual([
+      expect.stringContaining('"event":"worker.job.claimed"'),
+      expect.stringContaining('"event":"worker.job.cancelling"'),
+      expect.stringContaining('"event":"worker.job.cancelled"'),
+    ]);
+  });
+
   it("stops polling when its signal is cancelled", async () => {
     const controller = new AbortController();
     let calls = 0;
@@ -287,7 +379,12 @@ describe("worker daemon API", () => {
         { headers: { "content-type": "application/json" } },
       );
     });
-    await runWorkerDaemon(config, api, controller.signal);
+    await runWorkerDaemon(
+      config,
+      api,
+      controller.signal,
+      async () => undefined,
+    );
     expect(calls).toBe(2);
   });
 });

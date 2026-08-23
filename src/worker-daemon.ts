@@ -1,53 +1,57 @@
-import type { WorkerApi, WorkerJob } from "./worker-api.js";
+import {
+  WorkerApiError,
+  type WorkerApi,
+  type WorkerJob,
+} from "./worker-api.js";
+import { setTimeout as delay } from "node:timers/promises";
 import type { WorkerConfig } from "./worker-config.js";
 
 export type WorkerJobHandler = (
   job: WorkerJob,
   signal: AbortSignal,
 ) => Promise<unknown>;
-export const WORKER_JOB_HANDLER_NOT_IMPLEMENTED =
-  "WORKER_JOB_HANDLER_NOT_IMPLEMENTED";
+type WorkerDaemonApi = Pick<
+  WorkerApi,
+  | "register"
+  | "heartbeat"
+  | "claim"
+  | "complete"
+  | "fail"
+  | "acknowledgeCancellation"
+>;
 export const WORKER_JOB_HANDLER_FAILED = "WORKER_JOB_HANDLER_FAILED";
-type WorkerFailure =
-  typeof WORKER_JOB_HANDLER_NOT_IMPLEMENTED | typeof WORKER_JOB_HANDLER_FAILED;
 type WorkerFailureLog = Readonly<{
   event: "worker.job.failed";
   workerId: string;
   jobId: string;
   attemptId: string;
-  failure: WorkerFailure;
+  failure: typeof WORKER_JOB_HANDLER_FAILED;
   errorName: string;
   errorMessage: string;
   errorStack: string | null;
 }>;
 type WorkerClaimedLog = Readonly<{
   event:
-    "worker.job.claimed" | "worker.job.completing" | "worker.job.completed";
+    | "worker.job.claimed"
+    | "worker.job.completing"
+    | "worker.job.completed"
+    | "worker.job.cancelling"
+    | "worker.job.cancelled";
   workerId: string;
   jobId: string;
   attemptId: string;
 }>;
 
-export const unimplementedWorkerJobHandler: WorkerJobHandler = async () => {
-  throw new Error(WORKER_JOB_HANDLER_NOT_IMPLEMENTED);
+const wait = async (
+  milliseconds: number,
+  signal: AbortSignal,
+): Promise<void> => {
+  try {
+    await delay(milliseconds, undefined, { signal });
+  } catch (error) {
+    if (!signal.aborted) throw error;
+  }
 };
-
-const wait = (milliseconds: number, signal: AbortSignal): Promise<void> =>
-  new Promise((resolve) => {
-    if (signal.aborted) {
-      resolve();
-      return;
-    }
-    const timer = setTimeout(resolve, milliseconds);
-    signal.addEventListener(
-      "abort",
-      () => {
-        clearTimeout(timer);
-        resolve();
-      },
-      { once: true },
-    );
-  });
 
 const redactSensitive = (value: string, token: string): string => {
   const withoutToken =
@@ -78,7 +82,6 @@ const describeError = (
 const logWorkerJobFailure = (
   config: WorkerConfig,
   job: WorkerJob,
-  failure: WorkerFailure,
   error: unknown,
 ): void => {
   console.error(
@@ -87,7 +90,7 @@ const logWorkerJobFailure = (
       workerId: config.workerId,
       jobId: job.jobId,
       attemptId: job.attemptId,
-      failure,
+      failure: WORKER_JOB_HANDLER_FAILED,
       ...describeError(error, config.token),
     } satisfies WorkerFailureLog),
   );
@@ -110,9 +113,9 @@ const logWorkerJobInfo = (
 
 export async function runWorkerDaemon(
   config: WorkerConfig,
-  api: WorkerApi,
+  api: WorkerDaemonApi,
   signal: AbortSignal,
-  handleJob: WorkerJobHandler = unimplementedWorkerJobHandler,
+  handleJob: WorkerJobHandler,
 ): Promise<void> {
   await api.register();
   while (!signal.aborted) {
@@ -127,13 +130,18 @@ export async function runWorkerDaemon(
         await api.complete(job.jobId, result);
         logWorkerJobInfo("worker.job.completed", config, job);
       } catch (error) {
-        const failure =
-          error instanceof Error &&
-          error.message === WORKER_JOB_HANDLER_NOT_IMPLEMENTED
-            ? WORKER_JOB_HANDLER_NOT_IMPLEMENTED
-            : WORKER_JOB_HANDLER_FAILED;
-        logWorkerJobFailure(config, job, failure, error);
-        await api.fail(job.jobId, failure);
+        if (
+          (error instanceof WorkerApiError &&
+            error.code === "CANCEL_REQUESTED") ||
+          (error instanceof Error && error.message === "WORKER_JOB_CANCELLED")
+        ) {
+          logWorkerJobInfo("worker.job.cancelling", config, job);
+          await api.acknowledgeCancellation(job.jobId);
+          logWorkerJobInfo("worker.job.cancelled", config, job);
+          continue;
+        }
+        logWorkerJobFailure(config, job, error);
+        await api.fail(job.jobId, WORKER_JOB_HANDLER_FAILED);
       }
     }
     await wait(

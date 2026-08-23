@@ -9,6 +9,11 @@ const EnvSchema = z.object({
   RVS_HEARTBEAT_INTERVAL_MS: z.coerce.number().int().min(1_000).default(30_000),
   RVS_POLL_INTERVAL_MS: z.coerce.number().int().min(1_000).default(5_000),
   RVS_API_REQUEST_TIMEOUT_MS: z.coerce.number().int().min(1).default(30_000),
+  RVS_MEDIA_REQUEST_TIMEOUT_MS: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .default(1_800_000),
 });
 
 export type WorkerConfig = Readonly<{
@@ -19,6 +24,7 @@ export type WorkerConfig = Readonly<{
   heartbeatIntervalMs: number;
   pollIntervalMs: number;
   apiRequestTimeoutMs: number;
+  mediaRequestTimeoutMs: number;
 }>;
 
 export function parseWorkerConfig(
@@ -38,5 +44,6 @@ export function parseWorkerConfig(
     heartbeatIntervalMs: parsed.RVS_HEARTBEAT_INTERVAL_MS,
     pollIntervalMs: parsed.RVS_POLL_INTERVAL_MS,
     apiRequestTimeoutMs: parsed.RVS_API_REQUEST_TIMEOUT_MS,
+    mediaRequestTimeoutMs: parsed.RVS_MEDIA_REQUEST_TIMEOUT_MS,
   };
 }

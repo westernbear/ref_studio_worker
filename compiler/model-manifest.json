@@ -1,0 +1,25 @@
+{
+  "schemaVersion": "rvs-model-manifest-v1",
+  "models": [
+    {
+      "name": "rvm_mobilenetv3.pth",
+      "sha256": "3c7c1d92033f7c38d6577c481d13a195d7d80a159b960f4f3119ac7b534cf4f8"
+    },
+    {
+      "name": "midas_v21_small_256.pt",
+      "sha256": "70d6b9c891758c67f974a6097fb0c608c7ee67fb81ac3e5588847d5596d56fca"
+    },
+    {
+      "name": "easyocr-craft.zip",
+      "sha256": "8dc6a1c703a89ed56308ef742d26ebd45c656248cbbbda6e7fe60e569f873e65"
+    },
+    {
+      "name": "easyocr-korean.zip",
+      "sha256": "3cdaad22676723040ceb5c6fe72089d656b3bc1f630889c373ade86f3ab38c2e"
+    },
+    {
+      "name": "easyocr-english.zip",
+      "sha256": "1b5eaebf1c062de6205560c97ffcfa8dc0e6f413c340e8adc5cfc57e159f61ff"
+    }
+  ]
+}

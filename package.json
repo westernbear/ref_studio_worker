@@ -3,18 +3,17 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
+  "packageManager": "pnpm@11.20.0",
   "scripts": {
     "build": "tsc",
     "test": "vitest",
     "compiler:smoke": "vitest run src/compiler-orchestrator.test.ts",
-    "render:smoke": "node src/capture/smoke-runner.mjs",
     "start": "node dist/index.js",
     "dev": "pnpm build && pnpm start",
     "compose:cpu": "docker compose run --rm worker",
     "compose:gpu": "docker compose -f docker-compose.yml -f docker-compose.gpu.yml run --rm worker"
   },
   "dependencies": {
-    "better-sqlite3": "12.2.0",
     "zod": "4.1.5"
   },
   "devDependencies": {
