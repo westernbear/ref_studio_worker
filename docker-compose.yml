@@ -1,0 +1,10 @@
+services:
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    network_mode: none
+    environment:
+      CI: "true"
+      RVS_NO_NETWORK: "1"
+    command: ["pnpm", "test", "--run", "src/compiler-orchestrator.test.ts"]
