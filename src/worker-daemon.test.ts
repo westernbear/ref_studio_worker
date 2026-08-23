@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createWorkerApi } from "./worker-api.js";
 import {
   runWorkerDaemon,
@@ -108,6 +108,7 @@ describe("worker daemon API", () => {
 
   it("reports not implemented for the default handler", async () => {
     const failures: string[] = [];
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     const controller = new AbortController();
     const api = {
       register: async () => {},
@@ -121,12 +122,22 @@ describe("worker daemon API", () => {
         failures.push(message);
       },
     };
-    await runWorkerDaemon(config, api, controller.signal);
+    let logLine = "";
+    try {
+      await runWorkerDaemon(config, api, controller.signal);
+      logLine = String(errorSpy.mock.calls[0]?.[0]);
+    } finally {
+      errorSpy.mockRestore();
+    }
     expect(failures).toEqual([WORKER_JOB_HANDLER_NOT_IMPLEMENTED]);
+    expect(logLine).toContain('"event":"worker.job.failed"');
+    expect(logLine).toContain('"jobId":"job-a"');
+    expect(logLine).toContain(WORKER_JOB_HANDLER_NOT_IMPLEMENTED);
   });
 
   it("reports a stable failure without exposing handler errors", async () => {
     const failures: string[] = [];
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     const api = {
       register: async () => {},
       heartbeat: async () => {},
@@ -141,12 +152,24 @@ describe("worker daemon API", () => {
       },
     };
     const controller = new AbortController();
-    await runWorkerDaemon(config, api, controller.signal, async () => {
-      controller.abort();
-      throw new Error("secret-token");
-    });
+    let logLine = "";
+    try {
+      await runWorkerDaemon(config, api, controller.signal, async () => {
+        controller.abort();
+        throw new Error("secret-token");
+      });
+      logLine = String(errorSpy.mock.calls[0]?.[0]);
+    } finally {
+      errorSpy.mockRestore();
+    }
     expect(failures).toEqual([WORKER_JOB_HANDLER_FAILED]);
     expect(failures.join()).not.toContain("secret-token");
+    expect(logLine).toContain('"event":"worker.job.failed"');
+    expect(logLine).toContain('"workerId":"worker-test"');
+    expect(logLine).toContain('"attemptId":"attempt-a"');
+    expect(logLine).toContain(WORKER_JOB_HANDLER_FAILED);
+    expect(logLine).toContain("[redacted]");
+    expect(logLine).not.toContain("secret-token");
   });
 
   it("stops polling when its signal is cancelled", async () => {
