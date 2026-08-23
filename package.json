@@ -4,11 +4,12 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "tsc --noEmit",
+    "build": "tsc",
     "test": "vitest",
     "compiler:smoke": "vitest run src/compiler-orchestrator.test.ts",
     "render:smoke": "node src/capture/smoke-runner.mjs",
     "start": "node dist/index.js",
+    "dev": "pnpm build && pnpm start",
     "compose:cpu": "docker compose run --rm worker",
     "compose:gpu": "docker compose -f docker-compose.yml -f docker-compose.gpu.yml run --rm worker"
   },

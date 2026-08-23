@@ -10,4 +10,6 @@ COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.json ./
 COPY src ./src
 RUN corepack enable && pnpm install --frozen-lockfile
 
-CMD ["pnpm", "test", "--run", "src/compiler-orchestrator.test.ts"]
+RUN pnpm build
+
+CMD ["pnpm", "start"]
