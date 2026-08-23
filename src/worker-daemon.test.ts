@@ -100,6 +100,35 @@ describe("worker daemon API", () => {
     );
   });
 
+  it("times out stalled worker API response bodies", async () => {
+    const api = createWorkerApi(
+      { ...config, apiRequestTimeoutMs: 1 },
+      async (_input, init) => {
+        const signal = init?.signal;
+        if (!signal) throw new Error("missing abort signal");
+        const body = new ReadableStream({
+          start(controller) {
+            signal.addEventListener(
+              "abort",
+              () =>
+                controller.error(
+                  signal.reason instanceof Error
+                    ? signal.reason
+                    : new Error("request aborted"),
+                ),
+              { once: true },
+            );
+          },
+        });
+        return new Response(body, {
+          headers: { "content-type": "application/json" },
+        });
+      },
+    );
+
+    await expect(api.register()).rejects.toThrow("request timed out after 1ms");
+  });
+
   it("reports completed jobs after a successful handler", async () => {
     const calls: string[] = [];
     const infoSpy = vi.spyOn(console, "info").mockImplementation(() => {});

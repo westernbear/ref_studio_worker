@@ -47,7 +47,8 @@ export function createWorkerApi(
     body: unknown,
     schema: z.ZodType<T>,
   ): Promise<T> {
-    let response: Response;
+    let result: Readonly<{ response: Response; responseBody: string }> | null =
+      null;
     const controller = new AbortController();
     const timeout = setTimeout(
       () =>
@@ -57,7 +58,7 @@ export function createWorkerApi(
       config.apiRequestTimeoutMs,
     );
     try {
-      response = await fetcher(`${config.apiBaseUrl}${path}`, {
+      const response = await fetcher(`${config.apiBaseUrl}${path}`, {
         method: "POST",
         headers: {
           authorization: `Bearer ${config.token}`,
@@ -66,6 +67,7 @@ export function createWorkerApi(
         body: JSON.stringify(body),
         signal: controller.signal,
       });
+      result = { response, responseBody: await response.text() };
     } catch (error) {
       if (error instanceof Error)
         throw new WorkerApiError(
@@ -77,7 +79,13 @@ export function createWorkerApi(
     } finally {
       clearTimeout(timeout);
     }
-    const responseBody = await response.text();
+    if (!result)
+      throw new WorkerApiError(
+        path,
+        null,
+        `worker API fetch failed for ${path}; check RVS_API_BASE_URL and network reachability`,
+      );
+    const { response, responseBody } = result;
     if (!response.ok)
       throw new WorkerApiError(
         path,
