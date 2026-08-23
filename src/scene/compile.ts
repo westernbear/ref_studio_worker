@@ -25,7 +25,7 @@ export type Owner = {
   readonly editable: boolean;
   readonly assetRef: string;
   readonly confidence: number;
-  readonly content?: string;
+  readonly content?: string | undefined;
 };
 export type Asset = {
   readonly assetId: string;
@@ -35,9 +35,9 @@ export type Asset = {
   readonly [key: string]: Json;
 };
 export type Lifecycle = {
-  readonly enter?: Json;
-  readonly stable?: Json;
-  readonly exit?: Json;
+  readonly enter?: Json | undefined;
+  readonly stable?: Json | undefined;
+  readonly exit?: Json | undefined;
 };
 export type Track = {
   readonly trackId: string;
@@ -69,7 +69,7 @@ export type EvidenceInput = {
   readonly reason: string;
   readonly timestamp: string;
   readonly gate: "APPROVED" | "PENDING" | "REJECTED";
-  readonly needsChoice?: readonly Json[];
+  readonly needsChoice?: readonly Json[] | undefined;
   readonly owners: readonly Owner[];
   readonly editableAssets: readonly Asset[];
   readonly geometry: Readonly<Record<string, Geometry>>;
@@ -84,7 +84,7 @@ export type EvidenceInput = {
   readonly audio: {
     readonly sampleRateHz: number;
     readonly channels: number;
-    readonly frameRate?: number;
+    readonly frameRate?: number | undefined;
     readonly anchors: readonly AudioAnchor[];
   };
   readonly passes: readonly Pass[];

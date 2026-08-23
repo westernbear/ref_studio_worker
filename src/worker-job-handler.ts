@@ -7,6 +7,7 @@ import { CompilerOrchestrator } from "./compiler-orchestrator.js";
 import { normalizeMedia } from "./media-normalizer.js";
 import { runCommand, type CommandRunner } from "./process-runner.js";
 import {
+  DELIVERY_FRAME_COUNT,
   renderWorkflowDelivery,
   type RenderDeliveryInput,
 } from "./render-delivery.js";
@@ -223,7 +224,7 @@ export const createWorkflowJobHandler = (
           onProgress: (stage, fraction) =>
             progress(`compiler:${stage}`, 0.55 + fraction * 0.25),
         });
-        await progress("preview-render", 0.8, 0, payload.frameCount);
+        await progress("preview-render", 0.8, 0, DELIVERY_FRAME_COUNT);
         await render({
           ...renderContext,
           mode: "preview",
@@ -239,8 +240,8 @@ export const createWorkflowJobHandler = (
         await progress(
           "preview-upload",
           0.98,
-          payload.frameCount,
-          payload.frameCount,
+          DELIVERY_FRAME_COUNT,
+          DELIVERY_FRAME_COUNT,
         );
         const preview = await dependencies.api.uploadPreview(
           job.jobId,
@@ -268,7 +269,7 @@ export const createWorkflowJobHandler = (
         .digest("hex");
       if (evidenceDigest !== payload.evidenceDigest)
         throw new Error("WORKER_EVIDENCE_DIGEST_MISMATCH");
-      await progress("scene-render", 0.4, 0, payload.frameCount);
+      await progress("scene-render", 0.4, 0, DELIVERY_FRAME_COUNT);
       const report = await render({
         ...renderContext,
         mode: "delivery",
@@ -281,7 +282,12 @@ export const createWorkflowJobHandler = (
             framesTotal,
           ),
       });
-      await progress("upload", 0.95, payload.frameCount, payload.frameCount);
+      await progress(
+        "upload",
+        0.95,
+        DELIVERY_FRAME_COUNT,
+        DELIVERY_FRAME_COUNT,
+      );
       const artifact = await dependencies.api.uploadArtifact(
         job.jobId,
         await readFile(outputPath),
