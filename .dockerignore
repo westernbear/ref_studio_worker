@@ -1,0 +1,8 @@
+.git
+.env
+node_modules
+.pnpm-store
+dist
+compiler/.venv
+**/__pycache__
+*.pyc

@@ -7,6 +7,8 @@
   "scripts": {
     "build": "tsc",
     "test": "vitest",
+    "format": "prettier --write --ignore-unknown --no-error-on-unmatched-pattern '*.*' 'compiler/**/*' 'src/**/*'",
+    "format:check": "prettier --check --ignore-unknown --no-error-on-unmatched-pattern '*.*' 'compiler/**/*' 'src/**/*'",
     "compiler:smoke": "vitest run src/compiler-orchestrator.test.ts",
     "start": "node dist/index.js",
     "dev": "pnpm build && pnpm start",
@@ -17,8 +19,9 @@
     "zod": "4.1.5"
   },
   "devDependencies": {
-    "typescript": "5.9.2",
     "@types/node": "24.3.0",
+    "prettier": "3.6.2",
+    "typescript": "5.9.2",
     "vitest": "3.2.4"
   }
 }
