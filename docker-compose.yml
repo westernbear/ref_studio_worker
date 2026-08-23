@@ -1,5 +1,6 @@
 services:
   worker:
+    image: reference-video-studio-worker:1.0.0
     restart: always
     init: true
     stop_grace_period: 30s
@@ -21,6 +22,7 @@ services:
       RVS_POLL_INTERVAL_MS: ${RVS_POLL_INTERVAL_MS:-5000}
   worker-smoke:
     profiles: ["smoke"]
+    image: reference-video-studio-worker:1.0.0
     build:
       context: .
       dockerfile: Dockerfile
