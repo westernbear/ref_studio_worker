@@ -75,6 +75,7 @@ describe("worker daemon API", () => {
 
   it("reports completed jobs after a successful handler", async () => {
     const calls: string[] = [];
+    const infoSpy = vi.spyOn(console, "info").mockImplementation(() => {});
     const api = {
       register: async () => {
         calls.push("register");
@@ -94,20 +95,55 @@ describe("worker daemon API", () => {
       },
     };
     const controller = new AbortController();
-    await runWorkerDaemon(
-      { ...config, heartbeatIntervalMs: 1_000, pollIntervalMs: 1_000 },
-      api,
-      controller.signal,
-      async () => {
+    try {
+      await runWorkerDaemon(
+        { ...config, heartbeatIntervalMs: 1_000, pollIntervalMs: 1_000 },
+        api,
+        controller.signal,
+        async () => {
+          controller.abort();
+          return { ok: true };
+        },
+      );
+    } finally {
+      infoSpy.mockRestore();
+    }
+    expect(calls).toEqual(["register", "heartbeat", "claim", "complete:job-a"]);
+  });
+
+  it("logs claimed jobs before running the handler", async () => {
+    const infoSpy = vi.spyOn(console, "info").mockImplementation(() => {});
+    const api = {
+      register: async () => {},
+      heartbeat: async () => {},
+      claim: async () => ({
+        jobId: "job-a",
+        attemptId: "attempt-a",
+        payload: {},
+      }),
+      complete: async () => {},
+      fail: async () => {},
+    };
+    const controller = new AbortController();
+    let logLine = "";
+    try {
+      await runWorkerDaemon(config, api, controller.signal, async () => {
         controller.abort();
         return { ok: true };
-      },
-    );
-    expect(calls).toEqual(["register", "heartbeat", "claim", "complete:job-a"]);
+      });
+      logLine = String(infoSpy.mock.calls[0]?.[0]);
+    } finally {
+      infoSpy.mockRestore();
+    }
+    expect(logLine).toContain('"event":"worker.job.claimed"');
+    expect(logLine).toContain('"workerId":"worker-test"');
+    expect(logLine).toContain('"jobId":"job-a"');
+    expect(logLine).toContain('"attemptId":"attempt-a"');
   });
 
   it("reports not implemented for the default handler", async () => {
     const failures: string[] = [];
+    const infoSpy = vi.spyOn(console, "info").mockImplementation(() => {});
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     const controller = new AbortController();
     const api = {
@@ -127,6 +163,7 @@ describe("worker daemon API", () => {
       await runWorkerDaemon(config, api, controller.signal);
       logLine = String(errorSpy.mock.calls[0]?.[0]);
     } finally {
+      infoSpy.mockRestore();
       errorSpy.mockRestore();
     }
     expect(failures).toEqual([WORKER_JOB_HANDLER_NOT_IMPLEMENTED]);
@@ -137,6 +174,7 @@ describe("worker daemon API", () => {
 
   it("reports a stable failure without exposing handler errors", async () => {
     const failures: string[] = [];
+    const infoSpy = vi.spyOn(console, "info").mockImplementation(() => {});
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     const api = {
       register: async () => {},
@@ -160,6 +198,7 @@ describe("worker daemon API", () => {
       });
       logLine = String(errorSpy.mock.calls[0]?.[0]);
     } finally {
+      infoSpy.mockRestore();
       errorSpy.mockRestore();
     }
     expect(failures).toEqual([WORKER_JOB_HANDLER_FAILED]);

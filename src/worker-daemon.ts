@@ -15,6 +15,12 @@ type WorkerFailureLog = Readonly<{
   errorMessage: string
   errorStack: string | null
 }>
+type WorkerClaimedLog = Readonly<{
+  event: "worker.job.claimed"
+  workerId: string
+  jobId: string
+  attemptId: string
+}>
 
 export const unimplementedWorkerJobHandler: WorkerJobHandler = async () => { throw new Error(WORKER_JOB_HANDLER_NOT_IMPLEMENTED) }
 
@@ -62,6 +68,12 @@ export async function runWorkerDaemon(config: WorkerConfig, api: WorkerApi, sign
     if (signal.aborted) break
     const job = await api.claim()
     if (job) {
+      console.info(JSON.stringify({
+        event: "worker.job.claimed",
+        workerId: config.workerId,
+        jobId: job.jobId,
+        attemptId: job.attemptId,
+      } satisfies WorkerClaimedLog))
       try {
         const result = await handleJob(job, signal)
         await api.complete(job.jobId, result)
