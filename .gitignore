@@ -4,6 +4,7 @@ node_modules/
 dist/
 .turbo/
 .cache/
+.omo/
 __pycache__/
 *.py[cod]
 compiler/.venv/
