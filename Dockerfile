@@ -3,7 +3,8 @@ FROM python@sha256:356b0d18f9385f4bdcc673af60e1e64c9d1504952e4ec36ee32044c722a6b
 FROM node@sha256:65932751ed4073ed02f5c04e494e4b2572a891b7dbea0568a863dc80341bf848 AS media-builder
 
 ENV DEBIAN_FRONTEND=noninteractive
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get -o Acquire::Retries=5 -o Acquire::http::No-Cache=true -o Acquire::http::Pipeline-Depth=0 update && \
+    apt-get -o Acquire::Retries=5 -o Acquire::http::No-Cache=true -o Acquire::http::Pipeline-Depth=0 install -y --no-install-recommends \
     build-essential ca-certificates curl libfreetype6-dev libharfbuzz-dev \
     nasm pkg-config xz-utils && rm -rf /var/lib/apt/lists/*
 RUN curl -fsSLo /tmp/x264.tar.gz https://github.com/mirror/x264/archive/373697b467f7cd0af88f1e9e32d4f10540df4687.tar.gz && \
@@ -33,7 +34,8 @@ RUN curl -fsSLo /tmp/x264.tar.gz https://github.com/mirror/x264/archive/373697b4
 
 FROM node@sha256:65932751ed4073ed02f5c04e494e4b2572a891b7dbea0568a863dc80341bf848 AS assets
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get -o Acquire::Retries=5 -o Acquire::http::No-Cache=true -o Acquire::http::Pipeline-Depth=0 update && \
+    apt-get -o Acquire::Retries=5 -o Acquire::http::No-Cache=true -o Acquire::http::Pipeline-Depth=0 install -y --no-install-recommends \
     ca-certificates curl unzip && rm -rf /var/lib/apt/lists/*
 RUN mkdir -p /opt/rvs/model-artifacts /opt/rvs/models/easyocr /opt/rvs/vendor /opt/rvs/fonts && \
     curl -fsSLo /tmp/chrome.zip https://storage.googleapis.com/chrome-for-testing-public/151.0.7922.138/linux64/chrome-linux64.zip && \
@@ -89,7 +91,8 @@ ENV DEBIAN_FRONTEND=noninteractive \
     MKL_NUM_THREADS=4 \
     UV_PROJECT_ENVIRONMENT=/opt/compiler-venv
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get -o Acquire::Retries=5 -o Acquire::http::No-Cache=true -o Acquire::http::Pipeline-Depth=0 update && \
+    apt-get -o Acquire::Retries=5 -o Acquire::http::No-Cache=true -o Acquire::http::Pipeline-Depth=0 install -y --no-install-recommends \
     ca-certificates curl libasound2 libatk-bridge2.0-0 libatk1.0-0 libcairo2 \
     libatspi2.0-0 libcups2 libdbus-1-3 libdrm2 libfontconfig1 libfreetype6 \
     libgbm1 libglib2.0-0 libharfbuzz0b libnspr4 libnss3 libpango-1.0-0 libx11-6 \
