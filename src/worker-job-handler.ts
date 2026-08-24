@@ -28,6 +28,7 @@ const Fps = z.union([
 const CommonPayload = {
   tenantId: z.string().min(1),
   uploadId: z.string().min(1),
+  sourceSha256: z.string().regex(/^[a-f0-9]{64}$/u),
   startFrame: z.number().int().nonnegative(),
   sourceFps: Fps,
   frameCount: z.number().int().min(96).max(240),
@@ -215,7 +216,12 @@ export const createWorkflowJobHandler = (
         };
       }
       await progress("download", 0.05);
-      await dependencies.api.downloadSource(job.jobId, sourcePath, signal);
+      await dependencies.api.downloadSource(
+        job.jobId,
+        sourcePath,
+        payload.sourceSha256,
+        signal,
+      );
       await progress("ffprobe", 0.12);
       const normalized = await normalizeMedia(
         {

@@ -6,6 +6,7 @@ import { captureBrowserFrames } from "./capture/browser.js";
 import { runCommand, type CommandRunner } from "./process-runner.js";
 
 const CHROMIUM_VERSION = "151.0.7922.138";
+const PREFLIGHT_TIMEOUT_MS = 120_000;
 
 export type WorkerPreflightReport = Readonly<{
   status: "PASS";
@@ -37,7 +38,11 @@ export async function runWorkerPreflight(
     dependencies.readIdentityFile ??
     ((path: string): Promise<Uint8Array> => readFile(path));
   const workspace = await mkdtemp(join(tmpdir(), "rvs-preflight-"));
-  const options = { cwd: workspace, signal, timeoutMs: 120_000 };
+  const options = {
+    cwd: workspace,
+    signal,
+    timeoutMs: PREFLIGHT_TIMEOUT_MS,
+  };
   const chromePath = process.env.CHROME_PATH ?? "/opt/chrome/chrome";
   const fontPath =
     process.env.RVS_FONT_PATH ?? "/opt/rvs/fonts/WantedSansVariable.ttf";
@@ -78,7 +83,10 @@ export async function runWorkerPreflight(
         },
       ],
       residualRgb16x9: [Array<number>(432).fill(0)],
-      signal,
+      signal: AbortSignal.any([
+        signal,
+        AbortSignal.timeout(PREFLIGHT_TIMEOUT_MS),
+      ]),
       onFrame: async () => undefined,
       renderContract: { kind: "preflight" },
     });

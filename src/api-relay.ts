@@ -102,6 +102,7 @@ export const createApiRelayServer = (
 
     const transport =
       upstream.protocol === "https:" ? httpsRequest : httpRequest;
+    let upstreamComplete = false;
     const proxied = transport(
       {
         protocol: upstream.protocol,
@@ -112,6 +113,9 @@ export const createApiRelayServer = (
         headers: forwardedHeaders(incoming.headers, upstream.host),
       },
       (response) => {
+        response.once("end", () => {
+          upstreamComplete = true;
+        });
         outgoing.writeHead(
           response.statusCode ?? 502,
           forwardedHeaders(response.headers),
@@ -139,7 +143,10 @@ export const createApiRelayServer = (
       requestTimeoutMs,
     );
     deadline.unref();
-    outgoing.once("close", () => clearTimeout(deadline));
+    outgoing.once("close", () => {
+      clearTimeout(deadline);
+      if (!upstreamComplete) proxied.destroy();
+    });
     incoming.on("aborted", () => proxied.destroy());
     incoming.pipe(proxied);
   });

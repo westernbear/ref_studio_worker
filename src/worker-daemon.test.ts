@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -16,6 +17,8 @@ const config: WorkerConfig = {
   apiRequestTimeoutMs: 30_000,
   mediaRequestTimeoutMs: 1_800_000,
 };
+const sourceBytes = Uint8Array.from([1, 2, 3]);
+const sourceSha256 = createHash("sha256").update(sourceBytes).digest("hex");
 
 const createMediaApi = (
   source: () => Response | Promise<Response>,
@@ -119,7 +122,7 @@ describe("worker daemon API", () => {
           },
         });
       if (path.endsWith("/source")) {
-        const response = new Response(Uint8Array.from([1, 2, 3]), {
+        const response = new Response(sourceBytes, {
           headers: { "content-type": "video/mp4" },
         });
         Object.defineProperty(response, "arrayBuffer", {
@@ -147,7 +150,7 @@ describe("worker daemon API", () => {
     await api.claim();
 
     // When
-    await api.downloadSource("job-a", sourcePath, signal);
+    await api.downloadSource("job-a", sourcePath, sourceSha256, signal);
     await api.reportProgress(
       "job-a",
       {
@@ -195,6 +198,30 @@ describe("worker daemon API", () => {
     ]);
   });
 
+  it("removes source bytes and returns a deterministic digest mismatch", async () => {
+    const api = createMediaApi(
+      () =>
+        new Response(sourceBytes, {
+          headers: { "content-type": "video/mp4" },
+        }),
+    );
+    const destinationPath = join(temporaryDirectory, "mismatch.mp4");
+    await api.register();
+    await api.claim();
+
+    await expect(
+      api.downloadSource(
+        "job-a",
+        destinationPath,
+        "0".repeat(64),
+        new AbortController().signal,
+      ),
+    ).rejects.toMatchObject({ code: "WORKER_SOURCE_DIGEST_MISMATCH" });
+    await expect(readFile(destinationPath)).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  });
+
   it("removes an empty source destination", async () => {
     // Given
     const api = createMediaApi(
@@ -212,6 +239,7 @@ describe("worker daemon API", () => {
       api.downloadSource(
         "job-a",
         destinationPath,
+        sourceSha256,
         new AbortController().signal,
       ),
     ).rejects.toThrow("invalid media");
@@ -245,6 +273,7 @@ describe("worker daemon API", () => {
       api.downloadSource(
         "job-a",
         destinationPath,
+        sourceSha256,
         new AbortController().signal,
       ),
     ).rejects.toThrow("stream failed");
@@ -277,7 +306,12 @@ describe("worker daemon API", () => {
 
     // When / Then
     await expect(
-      api.downloadSource("job-a", destinationPath, controller.signal),
+      api.downloadSource(
+        "job-a",
+        destinationPath,
+        sourceSha256,
+        controller.signal,
+      ),
     ).rejects.toMatchObject({
       path: "/v1/workers/worker-test/jobs/job-a/source",
       status: null,
@@ -308,6 +342,7 @@ describe("worker daemon API", () => {
       api.downloadSource(
         "job-a",
         join(temporaryDirectory, "missing.mp4"),
+        sourceSha256,
         new AbortController().signal,
       ),
     ).rejects.toEqual(
@@ -455,7 +490,8 @@ describe("worker daemon API", () => {
       register: async () => {},
       heartbeat: vi.fn(async () => {
         calls.push("heartbeat");
-        if (calls.length === 2) throw new Error("session-token");
+        if (calls.length === 2)
+          throw new Error("heartbeat failed: secret-token");
       }),
       claim: vi.fn(async () => ({
         jobId: "job-a",
@@ -496,7 +532,10 @@ describe("worker daemon API", () => {
     expect(String(errorSpy.mock.calls[0]?.[0])).toContain(
       '"event":"worker.job.heartbeat_failed"',
     );
-    expect(String(errorSpy.mock.calls[0]?.[0])).not.toContain("session-token");
+    expect(String(errorSpy.mock.calls[0]?.[0])).toContain(
+      '"errorCause":"heartbeat failed: [redacted]"',
+    );
+    expect(String(errorSpy.mock.calls[0]?.[0])).not.toContain("secret-token");
     errorSpy.mockRestore();
     vi.useRealTimers();
   });

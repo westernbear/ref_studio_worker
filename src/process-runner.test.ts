@@ -5,7 +5,10 @@ import {
   terminateProcess,
 } from "./process-runner.js";
 
-afterEach(() => vi.useRealTimers());
+afterEach(() => {
+  vi.useRealTimers();
+  vi.restoreAllMocks();
+});
 
 describe("process termination", () => {
   it("escalates SIGTERM to SIGKILL after the bounded grace period", async () => {
@@ -22,6 +25,22 @@ describe("process termination", () => {
     await vi.advanceTimersByTimeAsync(PROCESS_TERMINATION_GRACE_MS);
     expect(signals).toEqual(["SIGTERM", "SIGKILL"]);
     cancelEscalation();
+  });
+
+  it("signals the POSIX process group when a child pid is available", async () => {
+    vi.useFakeTimers();
+    const childKill = vi.fn(() => true);
+    const processKill = vi
+      .spyOn(process, "kill")
+      .mockImplementation(() => true);
+
+    const cancelEscalation = terminateProcess({ pid: 42, kill: childKill });
+
+    expect(processKill).toHaveBeenCalledWith(-42, "SIGTERM");
+    expect(childKill).not.toHaveBeenCalled();
+    cancelEscalation();
+    await vi.advanceTimersByTimeAsync(PROCESS_TERMINATION_GRACE_MS);
+    expect(processKill).toHaveBeenCalledTimes(1);
   });
 
   it("rejects before spawning when cancellation already won", async () => {

@@ -267,4 +267,19 @@ describe("compiler orchestrator", () => {
       );
     }
   });
+
+  it("rejects a compiler spawn error", async () => {
+    const fixture = request();
+    const run = new CompilerOrchestrator({
+      python: "missing-python",
+      compilerArgs: [],
+      spawn: () => {
+        const child = new FakeChild();
+        queueMicrotask(() => child.emit("error", new Error("spawn ENOENT")));
+        return child;
+      },
+    }).compile(fixture);
+
+    await expect(run).rejects.toMatchObject({ token: "COMPILER_SPAWN_FAILED" });
+  });
 });

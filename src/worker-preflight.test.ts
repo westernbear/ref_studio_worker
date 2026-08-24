@@ -1,5 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { runWorkerPreflight } from "./worker-preflight.js";
+
+afterEach(() => vi.restoreAllMocks());
 
 describe("worker runtime preflight", () => {
   it("checks the pinned tools and browser before returning PASS", async () => {
@@ -101,5 +103,25 @@ describe("worker runtime preflight", () => {
       { rendererFrame: "b".repeat(64) },
     ])
       expect(await digest(changed)).not.toBe(baseline);
+  });
+
+  it("passes the existing preflight deadline to browser capture", async () => {
+    const deadline = new AbortController();
+    deadline.abort(new Error("preflight deadline"));
+    const timeout = vi
+      .spyOn(AbortSignal, "timeout")
+      .mockReturnValue(deadline.signal);
+
+    await expect(
+      runWorkerPreflight(new AbortController().signal, {
+        runCommand: async () => ({ stdout: "151.0.7922.138", stderr: "" }),
+        readIdentityFile: async () => Buffer.from("identity"),
+        captureFrames: async (input) => {
+          if (input.signal.aborted) throw new Error("PREFLIGHT_TIMEOUT");
+          throw new Error("BROWSER_CAPTURE_WAS_UNBOUNDED");
+        },
+      }),
+    ).rejects.toThrow("PREFLIGHT_TIMEOUT");
+    expect(timeout).toHaveBeenCalledWith(120_000);
   });
 });

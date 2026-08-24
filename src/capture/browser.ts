@@ -478,8 +478,16 @@ export async function captureBrowserFrames(
       `--user-data-dir=${profile}`,
       "about:blank",
     ],
-    { stdio: ["ignore", "ignore", "pipe"] },
+    {
+      stdio: ["ignore", "ignore", "pipe"],
+      detached: process.platform !== "win32",
+    },
   );
+  const spawnFailure = new Promise<never>((_resolve, reject) => {
+    child.once("error", (error) =>
+      reject(new Error("CHROMIUM_START_FAILED", { cause: error })),
+    );
+  });
   let stderr = "";
   child.stderr?.on("data", (chunk: Buffer) => {
     if (stderr.length < 65_536) stderr += chunk.toString();
@@ -487,7 +495,10 @@ export async function captureBrowserFrames(
   const activePort = join(profile, "DevToolsActivePort");
   let client: CdpClient | undefined;
   try {
-    await waitForFile(activePort, child, input.signal);
+    await Promise.race([
+      waitForFile(activePort, child, input.signal),
+      spawnFailure,
+    ]);
     const [port] = (await readFile(activePort, "utf8")).trim().split("\n");
     if (!port || !/^\d+$/.test(port)) throw new Error("CHROMIUM_PORT_INVALID");
     const targetResponse = await fetch(`http://127.0.0.1:${port}/json/new`, {

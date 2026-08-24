@@ -46,6 +46,8 @@ type WorkerClaimedLog = Readonly<{
   deletionEpoch: number | null;
   restoreEpoch: number | null;
 }>;
+type WorkerHeartbeatFailureLog = WorkerClaimedLog &
+  Readonly<{ errorCause: string }>;
 type WorkerLogContext = Pick<
   WorkerClaimedLog,
   "tenantId" | "phase" | "deletionEpoch" | "restoreEpoch"
@@ -123,7 +125,8 @@ const runClaimedJob = async (
           jobId: job.jobId,
           attemptId: job.attemptId,
           ...jobLogContext(job),
-        } satisfies WorkerClaimedLog),
+          errorCause: describeError(outcome.error, config.token).errorMessage,
+        } satisfies WorkerHeartbeatFailureLog),
       );
       return false;
     }

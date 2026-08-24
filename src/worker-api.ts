@@ -1,5 +1,7 @@
+import { createHash } from "node:crypto";
 import { createWriteStream, openAsBlob } from "node:fs";
 import { rm, stat } from "node:fs/promises";
+import { PassThrough } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { z } from "zod";
 import type { WorkerConfig } from "./worker-config.js";
@@ -43,6 +45,7 @@ export type WorkerApi = Readonly<{
   downloadSource(
     jobId: string,
     destinationPath: string,
+    expectedSha256: string,
     signal: AbortSignal,
   ): Promise<void>;
   reportProgress(
@@ -320,7 +323,7 @@ export function createWorkerApi(
       );
       leases.delete(jobId);
     },
-    downloadSource: async (jobId, destinationPath, signal) => {
+    downloadSource: async (jobId, destinationPath, expectedSha256, signal) => {
       const path = `${prefix}/jobs/${encodeURIComponent(jobId)}/source`;
       let streaming = false;
       try {
@@ -355,8 +358,12 @@ export function createWorkerApi(
                 `worker API returned invalid media (${contentType || "no content-type"}) for ${path}`,
               );
             streaming = true;
+            const digest = createHash("sha256");
+            const hashingStream = new PassThrough();
+            hashingStream.on("data", (chunk: Buffer) => digest.update(chunk));
             await pipeline(
               response.body,
+              hashingStream,
               createWriteStream(destinationPath, { mode: 0o600 }),
               { signal: requestSignal },
             );
@@ -365,6 +372,13 @@ export function createWorkerApi(
                 path,
                 response.status,
                 `worker API returned invalid media (${contentType}) for ${path}`,
+              );
+            if (digest.digest("hex") !== expectedSha256)
+              throw new WorkerApiError(
+                path,
+                response.status,
+                "WORKER_SOURCE_DIGEST_MISMATCH",
+                "WORKER_SOURCE_DIGEST_MISMATCH",
               );
           },
           sessionToken ?? "",

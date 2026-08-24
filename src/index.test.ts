@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { createHash } from "node:crypto";
 import { createWorkerRuntime } from "./index.js";
 import type { WorkerConfig } from "./worker-config.js";
 
@@ -34,6 +35,9 @@ describe("worker entrypoint", () => {
             payload: {
               tenantId: "ten_a",
               uploadId: "upl_a",
+              sourceSha256: createHash("sha256")
+                .update(Uint8Array.from([1]))
+                .digest("hex"),
               startFrame: 0,
               sourceFps: 30,
               frameCount: 120,

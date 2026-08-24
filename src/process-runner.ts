@@ -17,13 +17,25 @@ const MAX_DIAGNOSTIC_BYTES = 64 * 1024;
 export const PROCESS_TERMINATION_GRACE_MS = 3_000;
 
 type KillableProcess = Readonly<{
+  pid?: number | undefined;
   kill(signal?: NodeJS.Signals): boolean;
 }>;
 
 export const terminateProcess = (child: KillableProcess): (() => void) => {
-  child.kill("SIGTERM");
+  const signal = (value: NodeJS.Signals): void => {
+    if (process.platform !== "win32" && child.pid !== undefined)
+      try {
+        process.kill(-child.pid, value);
+        return;
+      } catch {
+        child.kill(value);
+        return;
+      }
+    child.kill(value);
+  };
+  signal("SIGTERM");
   const escalation = setTimeout(
-    () => child.kill("SIGKILL"),
+    () => signal("SIGKILL"),
     PROCESS_TERMINATION_GRACE_MS,
   );
   escalation.unref();
@@ -36,6 +48,7 @@ export const runCommand: CommandRunner = async (command, args, options) => {
     cwd: options.cwd,
     env: { ...process.env, ...options.env },
     stdio: ["ignore", "pipe", "pipe"],
+    detached: process.platform !== "win32",
   });
   let stdout = "";
   let stderr = "";

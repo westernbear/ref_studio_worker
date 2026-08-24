@@ -130,6 +130,7 @@ const defaultSpawn: ProcessFactory = (command, args, options) => {
     cwd: options.cwd,
     env: { ...options.env },
     stdio: ["ignore", "pipe", "pipe"],
+    detached: process.platform !== "win32",
   });
   return {
     stdout: child.stdout,
@@ -241,18 +242,23 @@ export class CompilerOrchestrator {
       });
       await writeFile(inputPath, JSON.stringify(input), { mode: 0o600 });
       if (request.signal?.aborted) throw safeError("COMPILER_CANCELLED");
-      const child = this.#options.spawn(
-        this.#options.python,
-        [...this.#options.compilerArgs, inputPath, outputPath],
-        {
-          cwd: workspace,
-          env: {
-            ...process.env,
-            RVS_NO_NETWORK: "1",
-            RVS_TENANT_ROOT: request.leaseRoot,
+      let child: Spawned;
+      try {
+        child = this.#options.spawn(
+          this.#options.python,
+          [...this.#options.compilerArgs, inputPath, outputPath],
+          {
+            cwd: workspace,
+            env: {
+              ...process.env,
+              RVS_NO_NETWORK: "1",
+              RVS_TENANT_ROOT: request.leaseRoot,
+            },
           },
-        },
-      );
+        );
+      } catch {
+        throw safeError("COMPILER_SPAWN_FAILED");
+      }
       let stdout = "";
       let stderr = "";
       let progressBuffer = "";
@@ -326,18 +332,24 @@ export class CompilerOrchestrator {
         if (this.#options.rssGib(child.pid) > MAX_RSS_GIB)
           stopFor("COMPILER_RSS_LIMIT");
       }, 1_000);
-      const result = await new Promise<{ code: number | null }>(
-        (resolveResult) =>
+      let result: { code: number | null };
+      try {
+        result = await new Promise((resolveResult, rejectResult) => {
+          child.on("error", () =>
+            rejectResult(safeError("COMPILER_SPAWN_FAILED")),
+          );
           child.on("close", (code: unknown) =>
             resolveResult({ code: typeof code === "number" ? code : null }),
-          ),
-      );
-      clearTimeout(timer);
-      clearTimeout(stageTimer);
-      clearInterval(rssMonitor);
-      request.signal?.removeEventListener("abort", abort);
-      await progressReports;
-      clearEscalation();
+          );
+        });
+        await progressReports;
+      } finally {
+        clearTimeout(timer);
+        clearTimeout(stageTimer);
+        clearInterval(rssMonitor);
+        request.signal?.removeEventListener("abort", abort);
+        clearEscalation();
+      }
       if (progressFailure.failed) throw progressFailure.error;
       if (request.signal?.aborted) throw safeError("COMPILER_CANCELLED");
       if (stoppedFor !== null) throw safeError(stoppedFor);

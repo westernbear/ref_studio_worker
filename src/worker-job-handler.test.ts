@@ -215,6 +215,9 @@ const job = (phase: Phase) => {
     payload: {
       tenantId: "ten_a",
       uploadId: "upl_a",
+      sourceSha256: createHash("sha256")
+        .update(Uint8Array.from([0, 0, 0, 16, 102, 116, 121, 112]))
+        .digest("hex"),
       startFrame: 0,
       sourceFps: 30,
       frameCount: 120,
@@ -269,6 +272,7 @@ describe("workflow job handler", () => {
     expect(fixture.api.downloadSource).toHaveBeenCalledWith(
       "job-a",
       expect.stringMatching(/[\\/]source\.mp4$/u),
+      job("analyze").payload.sourceSha256,
       expect.any(AbortSignal),
     );
     expect(fixture.api.downloadSource).toHaveBeenCalledOnce();

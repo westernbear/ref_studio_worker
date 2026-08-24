@@ -161,4 +161,42 @@ describe("API relay", () => {
       errorSpy.mockRestore();
     }
   });
+
+  it("destroys the upstream request when the downstream closes early", async () => {
+    let resolveUpstreamClosed: () => void = () => {};
+    const upstreamClosed = new Promise<void>((resolve) => {
+      resolveUpstreamClosed = resolve;
+    });
+    const upstreamPort = await listen(
+      createServer((_incoming, outgoing) => {
+        outgoing.writeHead(200, { "content-type": "text/plain" });
+        outgoing.write("first");
+        outgoing.once("close", resolveUpstreamClosed);
+      }),
+    );
+    const relayPort = await listen(
+      createApiRelayServer(`http://127.0.0.1:${upstreamPort}`),
+    );
+    const downstreamClosed = new Promise<void>((resolve, reject) => {
+      const outgoing = request(
+        { hostname: "127.0.0.1", port: relayPort, path: "/stream" },
+        (incoming) => {
+          incoming.once("data", () => incoming.destroy());
+          incoming.once("close", resolve);
+        },
+      );
+      outgoing.once("error", reject);
+      outgoing.end();
+    });
+
+    await downstreamClosed;
+    await expect(
+      Promise.race([
+        upstreamClosed,
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error("UPSTREAM_NOT_DESTROYED")), 100),
+        ),
+      ]),
+    ).resolves.toBeUndefined();
+  });
 });
