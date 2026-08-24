@@ -68,8 +68,8 @@ services:
       - /bin/sh
       - -ec
       - |
-        /opt/rvs/bin/ffmpeg -version >/dev/null
-        /opt/rvs/bin/ffprobe -version >/dev/null
+        /usr/bin/ffmpeg -version >/dev/null
+        /usr/bin/ffprobe -version >/dev/null
         /opt/chrome/chrome --version
         /opt/compiler-venv/bin/python -m unittest compiler.test_pipeline
         /opt/compiler-venv/bin/python -c 'from compiler.pipeline import verify_models, load_models; verify_models(); models = load_models(); assert set(models) == {"torch", "rvm", "midas", "ocr"}'

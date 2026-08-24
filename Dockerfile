@@ -1,37 +1,5 @@
 FROM python@sha256:356b0d18f9385f4bdcc673af60e1e64c9d1504952e4ec36ee32044c722a6bc4e AS python-runtime
 
-FROM node@sha256:65932751ed4073ed02f5c04e494e4b2572a891b7dbea0568a863dc80341bf848 AS media-builder
-
-ENV DEBIAN_FRONTEND=noninteractive
-RUN apt-get -o Acquire::Retries=5 -o Acquire::http::No-Cache=true -o Acquire::http::Pipeline-Depth=0 update && \
-    apt-get -o Acquire::Retries=5 -o Acquire::http::No-Cache=true -o Acquire::http::Pipeline-Depth=0 install -y --no-install-recommends \
-    build-essential ca-certificates curl libfreetype6-dev libharfbuzz-dev \
-    nasm pkg-config xz-utils && rm -rf /var/lib/apt/lists/*
-RUN curl -fsSLo /tmp/x264.tar.gz https://github.com/mirror/x264/archive/373697b467f7cd0af88f1e9e32d4f10540df4687.tar.gz && \
-    echo "ecf458e716d1f2f14db3f83575165df4911462933fff9863c3b3da60fe802edf  /tmp/x264.tar.gz" | sha256sum -c - && \
-    curl -fsSLo /tmp/ffmpeg.tar.xz https://ffmpeg.org/releases/ffmpeg-8.0.1.tar.xz && \
-    echo "05ee0b03119b45c0bdb4df654b96802e909e0a752f72e4fe3794f487229e5a41  /tmp/ffmpeg.tar.xz" | sha256sum -c - && \
-    mkdir -p /tmp/build/x264 /tmp/build/ffmpeg /opt/rvs && \
-    tar -xzf /tmp/x264.tar.gz -C /tmp/build/x264 --strip-components=1 && \
-    cd /tmp/build/x264 && \
-    ./configure --prefix=/opt/rvs --enable-static --disable-cli --disable-opencl && \
-    make -j2 && make install && \
-    tar -xJf /tmp/ffmpeg.tar.xz -C /tmp/build/ffmpeg --strip-components=1 && \
-    cd /tmp/build/ffmpeg && \
-    PKG_CONFIG_PATH=/opt/rvs/lib/pkgconfig ./configure \
-      --prefix=/opt/rvs \
-      --disable-debug \
-      --disable-doc \
-      --disable-shared \
-      --enable-static \
-      --enable-gpl \
-      --enable-libfreetype \
-      --enable-libharfbuzz \
-      --enable-libx264 \
-      --extra-cflags=-I/opt/rvs/include \
-      --extra-ldflags=-L/opt/rvs/lib && \
-    make -j2 && make install
-
 FROM node@sha256:65932751ed4073ed02f5c04e494e4b2572a891b7dbea0568a863dc80341bf848 AS assets
 
 RUN apt-get -o Acquire::Retries=5 -o Acquire::http::No-Cache=true -o Acquire::http::Pipeline-Depth=0 update && \
@@ -83,8 +51,8 @@ ENV DEBIAN_FRONTEND=noninteractive \
     RVS_MODEL_DIR=/opt/rvs/models \
     RVS_VENDOR_DIR=/opt/rvs/vendor \
     RVS_FONT_PATH=/opt/rvs/fonts/WantedSansVariable.ttf \
-    RVS_FFMPEG_PATH=/opt/rvs/bin/ffmpeg \
-    RVS_FFPROBE_PATH=/opt/rvs/bin/ffprobe \
+    RVS_FFMPEG_PATH=/usr/bin/ffmpeg \
+    RVS_FFPROBE_PATH=/usr/bin/ffprobe \
     HF_HUB_OFFLINE=1 \
     TRANSFORMERS_OFFLINE=1 \
     OMP_NUM_THREADS=4 \
@@ -93,13 +61,12 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 RUN apt-get -o Acquire::Retries=5 -o Acquire::http::No-Cache=true -o Acquire::http::Pipeline-Depth=0 update && \
     apt-get -o Acquire::Retries=5 -o Acquire::http::No-Cache=true -o Acquire::http::Pipeline-Depth=0 install -y --no-install-recommends \
-    ca-certificates curl libasound2 libatk-bridge2.0-0 libatk1.0-0 libcairo2 \
+    ca-certificates curl ffmpeg libasound2 libatk-bridge2.0-0 libatk1.0-0 libcairo2 \
     libatspi2.0-0 libcups2 libdbus-1-3 libdrm2 libfontconfig1 libfreetype6 \
     libgbm1 libglib2.0-0 libharfbuzz0b libnspr4 libnss3 libpango-1.0-0 libx11-6 \
     libx11-xcb1 libxcb1 libxcomposite1 libxdamage1 libxext6 libxfixes3 \
     libxkbcommon0 libxrandr2 && rm -rf /var/lib/apt/lists/*
 COPY --from=python-runtime /usr/local/ /usr/local/
-COPY --from=media-builder /opt/rvs/ /opt/rvs/
 COPY --from=assets /opt/chrome/ /opt/chrome/
 COPY --from=assets /opt/rvs/model-artifacts/ /opt/rvs/model-artifacts/
 COPY --from=assets /opt/rvs/models/ /opt/rvs/models/
