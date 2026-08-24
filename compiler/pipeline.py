@@ -1315,7 +1315,9 @@ def compile_bundle(
             )
         ocr.extend(frame_ocr)
         surfaces.extend(frame_surfaces)
-        camera.append(camera_measure(previous_gray, gray, matte["bounds"], fps))
+        camera.append(
+            {"frame": index, **camera_measure(previous_gray, gray, matte["bounds"], fps)}
+        )
         mattes.append(
             {
                 "frame": index,

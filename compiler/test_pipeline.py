@@ -1,8 +1,19 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest import mock
 
-from compiler.pipeline import map_bounds, scene_input, track_surfaces, track_text
+import numpy as np
+
+from compiler.pipeline import (
+    compile_bundle,
+    map_bounds,
+    scene_input,
+    track_surfaces,
+    track_text,
+)
 
 
 def candidate(frame: int, text: str, x: int, confidence: float = 0.8) -> dict:
@@ -14,7 +25,64 @@ def candidate(frame: int, text: str, x: int, confidence: float = 0.8) -> dict:
     }
 
 
+class FakeCapture:
+    def __init__(self, frames: list[np.ndarray]) -> None:
+        self.frames = frames
+        self.index = 0
+
+    def get(self, property_id: int) -> float:
+        import cv2
+
+        if property_id == cv2.CAP_PROP_FRAME_WIDTH:
+            return float(self.frames[0].shape[1])
+        if property_id == cv2.CAP_PROP_FRAME_HEIGHT:
+            return float(self.frames[0].shape[0])
+        return 0.0
+
+    def read(self) -> tuple[bool, np.ndarray | None]:
+        if self.index >= len(self.frames):
+            return False, None
+        frame = self.frames[self.index]
+        self.index += 1
+        return True, frame
+
+    def release(self) -> None:
+        pass
+
+
 class TrackTextTest(unittest.TestCase):
+    def test_compile_bundle_camera_frames_include_frame_index(self) -> None:
+        frames = [
+            np.full((96, 54, 3), index * 16, dtype=np.uint8) for index in range(2)
+        ]
+        with TemporaryDirectory() as directory:
+            artifact = Path(directory) / "normalized.mkv"
+            artifact.write_bytes(b"normalized")
+            with (
+                mock.patch("compiler.pipeline.load_models", return_value={}),
+                mock.patch(
+                    "compiler.pipeline.cv2.VideoCapture",
+                    return_value=FakeCapture(frames),
+                ),
+                mock.patch("compiler.pipeline.analyze_audio", return_value=[]),
+            ):
+                bundle, _stages = compile_bundle(
+                    {
+                        "tenantId": "ten_a",
+                        "jobId": "job-a",
+                        "attemptId": "attempt-a",
+                        "artifactPath": str(artifact),
+                    },
+                    artifact,
+                    len(frames),
+                    30,
+                )
+
+        self.assertEqual(
+            [0, 1],
+            [frame["frame"] for frame in bundle["observed"]["camera"]["frames"]],
+        )
+
     def test_merges_ocr_variants_without_merging_distinct_owners(self) -> None:
         tracks = track_text(
             [
