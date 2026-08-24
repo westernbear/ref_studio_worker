@@ -1,3 +1,6 @@
+import { createWriteStream, openAsBlob } from "node:fs";
+import { rm, stat } from "node:fs/promises";
+import { pipeline } from "node:stream/promises";
 import { z } from "zod";
 import type { WorkerConfig } from "./worker-config.js";
 import type { WorkerPreflightReport } from "./worker-preflight.js";
@@ -37,7 +40,11 @@ export type WorkerApi = Readonly<{
   complete(jobId: string, result: unknown): Promise<void>;
   fail(jobId: string, message: string): Promise<void>;
   acknowledgeCancellation(jobId: string): Promise<void>;
-  downloadSource(jobId: string, signal: AbortSignal): Promise<Uint8Array>;
+  downloadSource(
+    jobId: string,
+    destinationPath: string,
+    signal: AbortSignal,
+  ): Promise<void>;
   reportProgress(
     jobId: string,
     progress: WorkerProgress,
@@ -45,12 +52,12 @@ export type WorkerApi = Readonly<{
   ): Promise<void>;
   uploadArtifact(
     jobId: string,
-    bytes: Uint8Array,
+    sourcePath: string,
     signal: AbortSignal,
   ): Promise<ArtifactUpload>;
   uploadPreview(
     jobId: string,
-    bytes: Uint8Array,
+    sourcePath: string,
     signal: AbortSignal,
   ): Promise<ArtifactUpload>;
 }>;
@@ -82,6 +89,23 @@ const preview = (body: string): string =>
   body.replace(/\s+/gu, " ").trim().slice(0, 120);
 const isJson = (contentType: string): boolean =>
   contentType.toLowerCase().includes("application/json");
+const errorCode = (body: string, contentType: string): string | null => {
+  if (!isJson(contentType)) return null;
+  try {
+    const parsed: unknown = JSON.parse(body);
+    const error =
+      parsed !== null && typeof parsed === "object"
+        ? Reflect.get(parsed, "error")
+        : null;
+    const value =
+      error !== null && typeof error === "object"
+        ? Reflect.get(error, "code")
+        : null;
+    return typeof value === "string" ? value : null;
+  } catch {
+    return null;
+  }
+};
 
 export function createWorkerApi(
   config: WorkerConfig,
@@ -95,7 +119,7 @@ export function createWorkerApi(
     init: RequestInit,
     timeoutMs: number,
     signal: AbortSignal | undefined,
-    read: (response: Response) => Promise<T>,
+    read: (response: Response, signal: AbortSignal) => Promise<T>,
     token: string,
     leaseToken?: string,
   ): Promise<Readonly<{ response: Response; body: T }>> {
@@ -111,8 +135,9 @@ export function createWorkerApi(
         },
         signal: requestSignal,
       });
-      return { response, body: await read(response) };
+      return { response, body: await read(response, requestSignal) };
     } catch (error) {
+      if (error instanceof WorkerApiError) throw error;
       if (error instanceof Error)
         throw new WorkerApiError(
           path,
@@ -130,22 +155,10 @@ export function createWorkerApi(
     schema: z.ZodType<T>,
   ): T => {
     if (!response.ok) {
-      let code: string | null = null;
-      if (isJson(response.headers.get("content-type") ?? ""))
-        try {
-          const parsed: unknown = JSON.parse(responseBody);
-          const error =
-            parsed !== null && typeof parsed === "object"
-              ? Reflect.get(parsed, "error")
-              : null;
-          const value =
-            error !== null && typeof error === "object"
-              ? Reflect.get(error, "code")
-              : null;
-          code = typeof value === "string" ? value : null;
-        } catch {
-          code = null;
-        }
+      const code = errorCode(
+        responseBody,
+        response.headers.get("content-type") ?? "",
+      );
       throw new WorkerApiError(
         path,
         response.status,
@@ -212,17 +225,22 @@ export function createWorkerApi(
   const upload = async (
     jobId: string,
     kind: "artifact" | "preview-artifact",
-    bytes: Uint8Array,
+    sourcePath: string,
     signal: AbortSignal,
   ): Promise<ArtifactUpload> => {
     const path = `${prefix}/jobs/${encodeURIComponent(jobId)}/${kind}`;
+    const source = await openAsBlob(sourcePath, { type: "video/mp4" });
+    const init = {
+      method: "POST",
+      headers: {
+        "content-type": "video/mp4",
+        "content-length": String(source.size),
+      },
+      body: source,
+    } satisfies RequestInit;
     const result = await readResponse<string>(
       path,
-      {
-        method: "POST",
-        headers: { "content-type": "application/octet-stream" },
-        body: Uint8Array.from(bytes).buffer,
-      },
+      init,
       config.mediaRequestTimeoutMs,
       signal,
       (response) => response.text(),
@@ -302,36 +320,60 @@ export function createWorkerApi(
       );
       leases.delete(jobId);
     },
-    downloadSource: async (jobId, signal) => {
+    downloadSource: async (jobId, destinationPath, signal) => {
       const path = `${prefix}/jobs/${encodeURIComponent(jobId)}/source`;
-      const result = await readResponse<Uint8Array>(
-        path,
-        { method: "GET" },
-        config.mediaRequestTimeoutMs,
-        signal,
-        async (response) => new Uint8Array(await response.arrayBuffer()),
-        sessionToken ?? "",
-        leaseFor(jobId),
-      );
-      if (!result.response.ok)
-        throw new WorkerApiError(
+      let streaming = false;
+      try {
+        await readResponse<void>(
           path,
-          result.response.status,
-          `worker API request failed (${result.response.status}) for ${path}: ${preview(new TextDecoder().decode(result.body))}`,
+          { method: "GET" },
+          config.mediaRequestTimeoutMs,
+          signal,
+          async (response, requestSignal) => {
+            if (!response.ok) {
+              const responseBody = await response.text();
+              throw new WorkerApiError(
+                path,
+                response.status,
+                `worker API request failed (${response.status}) for ${path}: ${preview(responseBody)}`,
+                errorCode(
+                  responseBody,
+                  response.headers.get("content-type") ?? "",
+                ),
+              );
+            }
+            const contentType =
+              response.headers.get("content-type")?.toLowerCase() ?? "";
+            if (
+              !response.body ||
+              (!contentType.startsWith("video/") &&
+                !contentType.includes("application/octet-stream"))
+            )
+              throw new WorkerApiError(
+                path,
+                response.status,
+                `worker API returned invalid media (${contentType || "no content-type"}) for ${path}`,
+              );
+            streaming = true;
+            await pipeline(
+              response.body,
+              createWriteStream(destinationPath, { mode: 0o600 }),
+              { signal: requestSignal },
+            );
+            if ((await stat(destinationPath)).size === 0)
+              throw new WorkerApiError(
+                path,
+                response.status,
+                `worker API returned invalid media (${contentType}) for ${path}`,
+              );
+          },
+          sessionToken ?? "",
+          leaseFor(jobId),
         );
-      const contentType =
-        result.response.headers.get("content-type")?.toLowerCase() ?? "";
-      if (
-        result.body.byteLength === 0 ||
-        (!contentType.startsWith("video/") &&
-          !contentType.includes("application/octet-stream"))
-      )
-        throw new WorkerApiError(
-          path,
-          result.response.status,
-          `worker API returned invalid media (${contentType || "no content-type"}) for ${path}`,
-        );
-      return result.body;
+      } catch (error) {
+        if (streaming) await rm(destinationPath, { force: true });
+        throw error;
+      }
     },
     reportProgress: async (jobId, progress, signal) => {
       await post(
@@ -343,9 +385,9 @@ export function createWorkerApi(
         leaseFor(jobId),
       );
     },
-    uploadArtifact: (jobId, bytes, signal) =>
-      upload(jobId, "artifact", bytes, signal),
-    uploadPreview: (jobId, bytes, signal) =>
-      upload(jobId, "preview-artifact", bytes, signal),
+    uploadArtifact: (jobId, sourcePath, signal) =>
+      upload(jobId, "artifact", sourcePath, signal),
+    uploadPreview: (jobId, sourcePath, signal) =>
+      upload(jobId, "preview-artifact", sourcePath, signal),
   };
 }

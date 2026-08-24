@@ -25,7 +25,7 @@ type WorkerFailureLog = Readonly<{
   workerId: string;
   jobId: string;
   attemptId: string;
-  failure: typeof WORKER_JOB_HANDLER_FAILED;
+  failure: string;
   errorName: string;
   errorMessage: string;
   errorStack: string | null;
@@ -41,7 +41,41 @@ type WorkerClaimedLog = Readonly<{
   workerId: string;
   jobId: string;
   attemptId: string;
+  tenantId: string | null;
+  phase: string | null;
+  deletionEpoch: number | null;
+  restoreEpoch: number | null;
 }>;
+type WorkerLogContext = Pick<
+  WorkerClaimedLog,
+  "tenantId" | "phase" | "deletionEpoch" | "restoreEpoch"
+>;
+
+const ERROR_CODE = /^[A-Z][A-Z0-9_]{2,127}$/u;
+const CANCELLATION_CODES = new Set([
+  "CANCEL_REQUESTED",
+  "COMPILER_CANCELLED",
+  "WORKER_JOB_CANCELLED",
+]);
+
+const jobLogContext = (job: WorkerJob): WorkerLogContext => {
+  const tenantId = job.payload["tenantId"];
+  const phase = job.payload["phase"];
+  const deletionEpoch = job.payload["deletionEpoch"];
+  const restoreEpoch = job.payload["restoreEpoch"];
+  return {
+    tenantId: typeof tenantId === "string" ? tenantId : null,
+    phase: typeof phase === "string" ? phase : null,
+    deletionEpoch:
+      typeof deletionEpoch === "number" && Number.isSafeInteger(deletionEpoch)
+        ? deletionEpoch
+        : null,
+    restoreEpoch:
+      typeof restoreEpoch === "number" && Number.isSafeInteger(restoreEpoch)
+        ? restoreEpoch
+        : null,
+  };
+};
 
 const wait = async (
   milliseconds: number,
@@ -62,17 +96,15 @@ const runClaimedJob = async (
   handleJob: WorkerJobHandler,
 ): Promise<boolean> => {
   const controller = new AbortController();
-  const abort = (): void => controller.abort(signal.reason);
-  signal.addEventListener("abort", abort, { once: true });
-  let stopped = false;
+  const jobSignal = AbortSignal.any([signal, controller.signal]);
   const heartbeat = async (): Promise<void> => {
-    while (!stopped && !controller.signal.aborted) {
-      await wait(config.heartbeatIntervalMs, controller.signal);
-      if (!stopped && !controller.signal.aborted) await api.heartbeat();
+    while (!jobSignal.aborted) {
+      await wait(config.heartbeatIntervalMs, jobSignal);
+      if (!jobSignal.aborted) await api.heartbeat();
     }
   };
   const heartbeatTask = heartbeat();
-  const handlerTask = handleJob(job, controller.signal);
+  const handlerTask = handleJob(job, jobSignal);
   try {
     const outcome = await Promise.race([
       handlerTask.then((result) => ({ kind: "result" as const, result })),
@@ -90,13 +122,14 @@ const runClaimedJob = async (
           workerId: config.workerId,
           jobId: job.jobId,
           attemptId: job.attemptId,
+          ...jobLogContext(job),
         } satisfies WorkerClaimedLog),
       );
       return false;
     }
     if (outcome.kind === "heartbeat-stopped") {
       controller.abort();
-      await handlerTask.catch(() => undefined);
+      await handlerTask;
       return false;
     }
     logWorkerJobInfo("worker.job.completing", config, job);
@@ -104,9 +137,7 @@ const runClaimedJob = async (
     logWorkerJobInfo("worker.job.completed", config, job);
     return true;
   } finally {
-    stopped = true;
     controller.abort();
-    signal.removeEventListener("abort", abort);
     await heartbeatTask.catch(() => undefined);
   }
 };
@@ -137,21 +168,35 @@ const describeError = (
   };
 };
 
+const errorCodeFrom = (error: unknown): string | null => {
+  if (error instanceof WorkerApiError) return error.code;
+  if (!(error instanceof Error)) return null;
+  const separator = error.message.indexOf(":");
+  return separator === -1 ? error.message : error.message.slice(0, separator);
+};
+
 const logWorkerJobFailure = (
   config: WorkerConfig,
   job: WorkerJob,
   error: unknown,
-): void => {
+): string => {
+  const candidate = errorCodeFrom(error);
+  const failure =
+    candidate !== null && ERROR_CODE.test(candidate)
+      ? candidate
+      : WORKER_JOB_HANDLER_FAILED;
   console.error(
     JSON.stringify({
       event: "worker.job.failed",
       workerId: config.workerId,
       jobId: job.jobId,
       attemptId: job.attemptId,
-      failure: WORKER_JOB_HANDLER_FAILED,
+      failure,
+      ...jobLogContext(job),
       ...describeError(error, config.token),
     } satisfies WorkerFailureLog),
   );
+  return failure;
 };
 
 const logWorkerJobInfo = (
@@ -165,8 +210,14 @@ const logWorkerJobInfo = (
       workerId: config.workerId,
       jobId: job.jobId,
       attemptId: job.attemptId,
+      ...jobLogContext(job),
     } satisfies WorkerClaimedLog),
   );
+};
+
+const isCancellation = (error: unknown): boolean => {
+  const code = errorCodeFrom(error);
+  return code !== null && CANCELLATION_CODES.has(code);
 };
 
 export async function runWorkerDaemon(
@@ -185,19 +236,18 @@ export async function runWorkerDaemon(
       try {
         if (!(await runClaimedJob(config, api, signal, job, handleJob))) break;
       } catch (error) {
-        if (signal.aborted) break;
         if (
           (error instanceof WorkerApiError &&
             error.code === "CANCEL_REQUESTED") ||
-          (error instanceof Error && error.message === "WORKER_JOB_CANCELLED")
+          (!signal.aborted && isCancellation(error))
         ) {
           logWorkerJobInfo("worker.job.cancelling", config, job);
           await api.acknowledgeCancellation(job.jobId);
           logWorkerJobInfo("worker.job.cancelled", config, job);
           continue;
         }
-        logWorkerJobFailure(config, job, error);
-        await api.fail(job.jobId, WORKER_JOB_HANDLER_FAILED);
+        if (signal.aborted) break;
+        await api.fail(job.jobId, logWorkerJobFailure(config, job, error));
       }
     }
     await wait(

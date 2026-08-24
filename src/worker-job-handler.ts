@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
@@ -8,12 +8,15 @@ import { normalizeMedia } from "./media-normalizer.js";
 import { runCommand, type CommandRunner } from "./process-runner.js";
 import {
   compileEvidenceScene,
+  CompilationSchema,
   DELIVERY_FRAME_COUNT,
   renderWorkflowDelivery,
   type RenderDeliveryInput,
 } from "./render-delivery.js";
 import type { WorkerApi, WorkerProgress } from "./worker-api.js";
 import type { WorkerJobHandler } from "./worker-daemon.js";
+
+// allow: SIZE_OK - workflow phase routing stays beside its digest and lease checks.
 
 const Fps = z.union([
   z.literal(24),
@@ -22,19 +25,6 @@ const Fps = z.union([
   z.literal(50),
   z.literal(60),
 ]);
-const Compilation = z
-  .object({
-    authoring: z
-      .object({ digest: z.string().regex(/^[a-f0-9]{64}$/u) })
-      .passthrough(),
-    scene: z
-      .object({ digest: z.string().regex(/^[a-f0-9]{64}$/u) })
-      .passthrough(),
-    browserPassSpec: z
-      .object({ digest: z.string().regex(/^[a-f0-9]{64}$/u) })
-      .passthrough(),
-  })
-  .strict();
 const CommonPayload = {
   tenantId: z.string().min(1),
   uploadId: z.string().min(1),
@@ -43,6 +33,12 @@ const CommonPayload = {
   frameCount: z.number().int().min(96).max(240),
   deletionEpoch: z.number().int().nonnegative(),
   restoreEpoch: z.number().int().nonnegative(),
+} as const;
+const RenderPayload = {
+  evidence: z.record(z.string(), z.unknown()),
+  evidenceDigest: z.string().regex(/^[a-f0-9]{64}$/u),
+  compilation: CompilationSchema,
+  browserPassSpecDigest: z.string().regex(/^[a-f0-9]{64}$/u),
 } as const;
 const WorkflowPayload = z
   .discriminatedUnion("phase", [
@@ -57,21 +53,15 @@ const WorkflowPayload = z
     z
       .object({
         ...CommonPayload,
+        ...RenderPayload,
         phase: z.literal("preview"),
-        evidence: z.record(z.string(), z.unknown()),
-        evidenceDigest: z.string().regex(/^[a-f0-9]{64}$/u),
-        compilation: Compilation,
-        browserPassSpecDigest: z.string().regex(/^[a-f0-9]{64}$/u),
       })
       .strict(),
     z
       .object({
         ...CommonPayload,
+        ...RenderPayload,
         phase: z.literal("render"),
-        evidence: z.record(z.string(), z.unknown()),
-        evidenceDigest: z.string().regex(/^[a-f0-9]{64}$/u),
-        compilation: Compilation,
-        browserPassSpecDigest: z.string().regex(/^[a-f0-9]{64}$/u),
       })
       .strict(),
   ])
@@ -128,9 +118,6 @@ const defaultCompileEvidence = async (
     python: process.env.RVS_PYTHON_PATH ?? "python3.12",
     compilerArgs: ["-m", "compiler.pipeline"],
   });
-  let progressReports = Promise.resolve();
-  let progressError: unknown;
-  let progressFailed = false;
   const output = await compiler.compile({
     tenantId: input.tenantId,
     jobId: input.jobId,
@@ -158,20 +145,8 @@ const defaultCompileEvidence = async (
       expectedRestoreEpoch: input.restoreEpoch,
     },
     signal: input.signal,
-    onProgress: (event) => {
-      progressReports = progressReports.then(async () => {
-        if (progressFailed) return;
-        try {
-          await input.onProgress(event.stage, event.fraction);
-        } catch (error) {
-          progressFailed = true;
-          progressError = error;
-        }
-      });
-    },
+    onProgress: (event) => input.onProgress(event.stage, event.fraction),
   });
-  await progressReports;
-  if (progressFailed) throw progressError;
   return {
     evidence: output.bundle,
     evidenceDigest: createHash("sha256")
@@ -212,6 +187,10 @@ export const createWorkflowJobHandler = (
           event: "worker.job.stage",
           jobId: job.jobId,
           attemptId: job.attemptId,
+          tenantId: payload.tenantId,
+          workflowPhase: payload.phase,
+          deletionEpoch: payload.deletionEpoch,
+          restoreEpoch: payload.restoreEpoch,
           ...update,
         }),
       );
@@ -236,8 +215,7 @@ export const createWorkflowJobHandler = (
         };
       }
       await progress("download", 0.05);
-      const source = await dependencies.api.downloadSource(job.jobId, signal);
-      await writeFile(sourcePath, source, { mode: 0o600 });
+      await dependencies.api.downloadSource(job.jobId, sourcePath, signal);
       await progress("ffprobe", 0.12);
       const normalized = await normalizeMedia(
         {
@@ -310,18 +288,14 @@ export const createWorkflowJobHandler = (
         throw new Error("IR_VERSION_MISMATCH");
       await progress("scene-render", 0.4, 0, DELIVERY_FRAME_COUNT);
       const mode = payload.phase === "preview" ? "preview" : "delivery";
-      const renderController = new AbortController();
-      const cancelRender = (): void => renderController.abort(signal.reason);
-      signal.addEventListener("abort", cancelRender, { once: true });
-      let renderTimedOut = false;
-      const renderTimer = setTimeout(() => {
-        renderTimedOut = true;
-        renderController.abort(new Error("RENDER_DEADLINE"));
-      }, dependencies.renderDeadlineMs ?? 900_000);
+      const renderDeadline = AbortSignal.timeout(
+        dependencies.renderDeadlineMs ?? 900_000,
+      );
+      const renderSignal = AbortSignal.any([signal, renderDeadline]);
       try {
         const report = await render({
           ...renderContext,
-          signal: renderController.signal,
+          signal: renderSignal,
           mode,
           evidence: payload.evidence,
           expectedCompilation: payload.compilation,
@@ -339,25 +313,49 @@ export const createWorkflowJobHandler = (
           DELIVERY_FRAME_COUNT,
           DELIVERY_FRAME_COUNT,
         );
-        const bytes = await readFile(outputPath);
+        const artifactKind = mode === "preview" ? "preview" : "delivery";
+        console.info(
+          JSON.stringify({
+            event: "worker.artifact.upload.started",
+            jobId: job.jobId,
+            attemptId: job.attemptId,
+            tenantId: payload.tenantId,
+            phase: payload.phase,
+            deletionEpoch: payload.deletionEpoch,
+            restoreEpoch: payload.restoreEpoch,
+            artifactKind,
+          }),
+        );
+        const artifact = await (mode === "preview"
+          ? dependencies.api.uploadPreview(job.jobId, outputPath, renderSignal)
+          : dependencies.api.uploadArtifact(
+              job.jobId,
+              outputPath,
+              renderSignal,
+            ));
+        console.info(
+          JSON.stringify({
+            event: "worker.artifact.upload.completed",
+            jobId: job.jobId,
+            attemptId: job.attemptId,
+            tenantId: payload.tenantId,
+            phase: payload.phase,
+            deletionEpoch: payload.deletionEpoch,
+            restoreEpoch: payload.restoreEpoch,
+            artifactKind,
+            artifactId: artifact.artifactId,
+            sha256: artifact.sha256,
+            sizeBytes: artifact.sizeBytes,
+          }),
+        );
         if (mode === "preview") {
-          const preview = await dependencies.api.uploadPreview(
-            job.jobId,
-            bytes,
-            renderController.signal,
-          );
           return {
             protocol: "rvs.worker.v1",
             phase: "preview",
-            previewArtifactId: preview.artifactId,
+            previewArtifactId: artifact.artifactId,
             report,
           };
         }
-        const artifact = await dependencies.api.uploadArtifact(
-          job.jobId,
-          bytes,
-          renderController.signal,
-        );
         return {
           protocol: "rvs.worker.v1",
           phase: "render",
@@ -365,11 +363,12 @@ export const createWorkflowJobHandler = (
           report,
         };
       } catch (error) {
-        if (renderTimedOut) throw new Error("RENDER_DEADLINE");
+        if (signal.aborted)
+          throw signal.reason instanceof Error
+            ? signal.reason
+            : new Error("WORKER_JOB_CANCELLED");
+        if (renderDeadline.aborted) throw new Error("RENDER_DEADLINE");
         throw error;
-      } finally {
-        clearTimeout(renderTimer);
-        signal.removeEventListener("abort", cancelRender);
       }
     } finally {
       await rm(workspace, { recursive: true, force: true });

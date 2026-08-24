@@ -47,7 +47,9 @@ class FakeChild extends EventEmitter implements Spawned {
   readonly stdout = new PassThrough();
   readonly stderr = new PassThrough();
   readonly pid = 42;
-  kill(): boolean {
+  readonly kills: NodeJS.Signals[] = [];
+  kill(signal: NodeJS.Signals = "SIGTERM"): boolean {
+    this.kills.push(signal);
     queueMicrotask(() => this.emit("close", null));
     return true;
   }
@@ -224,5 +226,45 @@ describe("compiler orchestrator", () => {
       { stage: "preflight", fraction: 0.01 },
       { stage: "evidence", fraction: 1 },
     ]);
+  });
+
+  it("terminates the compiler and preserves a progress reporting error", async () => {
+    const fixture = request();
+    const progressError = new Error("CANCEL_REQUESTED");
+    let child: FakeChild | undefined;
+    const run = new CompilerOrchestrator({
+      python: "python",
+      compilerArgs: [],
+      spawn: () => {
+        const spawned = new FakeChild();
+        child = spawned;
+        queueMicrotask(() => {
+          spawned.stderr.emit(
+            "data",
+            `${JSON.stringify({ protocol: "rvs.compiler.v1", kind: "progress", stage: "preflight", fraction: 0.01 })}\n`,
+          );
+          spawned.stdout.emit("data", JSON.stringify(validOutput));
+          setTimeout(() => spawned.emit("close", 0), 20);
+        });
+        return spawned;
+      },
+    }).compile({
+      ...fixture,
+      onProgress: (event) => {
+        if (event.fraction !== 0.01) return;
+        const rejected = Promise.reject(progressError);
+        void rejected.catch(() => undefined);
+        return rejected;
+      },
+    });
+
+    try {
+      await expect(run).rejects.toBe(progressError);
+      expect(child?.kills).toEqual(["SIGTERM"]);
+    } finally {
+      await unlink(`/tmp/rvs-tenant/${fixture.attemptId}.evidence.json`).catch(
+        () => undefined,
+      );
+    }
   });
 });

@@ -110,7 +110,7 @@ RUN curl -fsSLo /tmp/uv.tar.gz https://github.com/astral-sh/uv/releases/download
 WORKDIR /app
 COPY compiler/pyproject.toml compiler/uv.lock ./compiler/
 RUN uv sync --project compiler --frozen --no-dev --no-install-project
-COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.json ./
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.json .prettierignore ./
 RUN corepack enable && corepack prepare pnpm@11.20.0 --activate && pnpm install --frozen-lockfile
 COPY compiler ./compiler
 COPY src ./src

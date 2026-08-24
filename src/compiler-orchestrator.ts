@@ -13,6 +13,9 @@ import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { spawn } from "node:child_process";
 import { z } from "zod";
+import { terminateProcess } from "./process-runner.js";
+
+// allow: SIZE_OK - compiler admission and child lifecycle form one state machine.
 
 const MAX_FRAMES = 240;
 const INTERVAL_MS = 4_000;
@@ -109,7 +112,7 @@ export type CompileRequest = Readonly<{
   runtimeManifest: CompilerInput["runtimeManifest"];
   guards: CompilerGuards;
   signal?: AbortSignal;
-  onProgress?: (progress: CompilerProgress) => void;
+  onProgress?: (progress: CompilerProgress) => void | Promise<void>;
 }>;
 
 export class CompilerOrchestratorError extends Error {
@@ -186,6 +189,21 @@ export class CompilerOrchestrator {
     const workspace = await mkdtemp(join(tmpdir(), "rvs-compiler-"));
     const inputPath = join(workspace, "request.json");
     const outputPath = join(workspace, "evidence.json");
+    const progressFailure: { failed: boolean; error: unknown } = {
+      failed: false,
+      error: undefined,
+    };
+    const reportProgress = async (
+      progress: CompilerProgress,
+    ): Promise<void> => {
+      try {
+        await request.onProgress?.(progress);
+      } catch (error) {
+        progressFailure.failed = true;
+        progressFailure.error = error;
+        throw error;
+      }
+    };
     try {
       if (this.#options.networkAllowed) throw safeError("NETWORK_NOT_ALLOWED");
       if (
@@ -202,7 +220,8 @@ export class CompilerOrchestrator {
         request.guards.restoreEpoch() !== request.guards.expectedRestoreEpoch
       )
         throw safeError("STALE_LEASE_OR_EPOCH");
-      request.onProgress?.({
+      if (request.signal?.aborted) throw safeError("COMPILER_CANCELLED");
+      await reportProgress({
         protocol: "rvs.compiler.v1",
         kind: "progress",
         stage: "preflight",
@@ -221,6 +240,7 @@ export class CompilerOrchestrator {
         runtimeManifest: request.runtimeManifest,
       });
       await writeFile(inputPath, JSON.stringify(input), { mode: 0o600 });
+      if (request.signal?.aborted) throw safeError("COMPILER_CANCELLED");
       const child = this.#options.spawn(
         this.#options.python,
         [...this.#options.compilerArgs, inputPath, outputPath],
@@ -239,12 +259,19 @@ export class CompilerOrchestrator {
       let stoppedFor: "COMPILER_DEADLINE" | "COMPILER_RSS_LIMIT" | null = null;
       let activeStage: CompilerStage = "preflight";
       let stageTimer: ReturnType<typeof setTimeout>;
+      let clearEscalation = (): void => {};
+      let terminating = false;
+      const stopChild = (): void => {
+        if (terminating) return;
+        terminating = true;
+        clearEscalation = terminateProcess(child);
+      };
       const stopFor = (
         reason: "COMPILER_DEADLINE" | "COMPILER_RSS_LIMIT",
       ): void => {
         if (stoppedFor !== null) return;
         stoppedFor = reason;
-        child.kill("SIGTERM");
+        stopChild();
       };
       const startStage = (stage: CompilerStage): void => {
         if (stage === activeStage) return;
@@ -263,6 +290,7 @@ export class CompilerOrchestrator {
         if (typeof chunk === "string" || Buffer.isBuffer(chunk))
           stdout += chunk.toString();
       });
+      let progressReports = Promise.resolve();
       child.stderr.on("data", (chunk: unknown) => {
         if (typeof chunk !== "string" && !Buffer.isBuffer(chunk)) return;
         const text = chunk.toString();
@@ -276,15 +304,19 @@ export class CompilerOrchestrator {
             if (progress.success) {
               if (compilerStage(progress.data.stage))
                 startStage(progress.data.stage);
-              request.onProgress?.(progress.data);
+              progressReports = progressReports
+                .then(async () => {
+                  if (!progressFailure.failed)
+                    await reportProgress(progress.data);
+                })
+                .catch(() => stopChild());
             }
           } catch {}
         }
       });
-      const abort = (): void => {
-        child.kill("SIGTERM");
-      };
+      const abort = (): void => stopChild();
       request.signal?.addEventListener("abort", abort, { once: true });
+      if (request.signal?.aborted) abort();
       const started = this.#options.now();
       const timer = setTimeout(
         () => stopFor("COMPILER_DEADLINE"),
@@ -304,6 +336,9 @@ export class CompilerOrchestrator {
       clearTimeout(stageTimer);
       clearInterval(rssMonitor);
       request.signal?.removeEventListener("abort", abort);
+      await progressReports;
+      clearEscalation();
+      if (progressFailure.failed) throw progressFailure.error;
       if (request.signal?.aborted) throw safeError("COMPILER_CANCELLED");
       if (stoppedFor !== null) throw safeError(stoppedFor);
       if (this.#options.rssGib(child.pid) > MAX_RSS_GIB)
@@ -328,7 +363,7 @@ export class CompilerOrchestrator {
           stderr.includes("NETWORK") ? "NETWORK_NOT_ALLOWED" : token,
         );
       }
-      request.onProgress?.({
+      await reportProgress({
         protocol: "rvs.compiler.v1",
         kind: "progress",
         stage: "evidence",
@@ -377,6 +412,7 @@ export class CompilerOrchestrator {
       await dir.close();
       return evidence;
     } catch (error) {
+      if (progressFailure.failed) throw progressFailure.error;
       if (
         error instanceof CompilerOrchestratorError ||
         error instanceof z.ZodError ||

@@ -11,6 +11,7 @@ services:
     environment:
       # Operator-facing remote API setting; the worker itself only sees this relay.
       RVS_API_BASE_URL: ${RVS_API_BASE_URL:-http://host.docker.internal:3200}
+      RVS_RELAY_REQUEST_TIMEOUT_MS: ${RVS_RELAY_REQUEST_TIMEOUT_MS:-1800000}
     command: ["node", "dist/api-relay.js"]
     networks:
       - worker-internal

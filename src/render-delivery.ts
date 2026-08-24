@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import { mkdir, readFile } from "node:fs/promises";
+import { createReadStream } from "node:fs";
+import { mkdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { z } from "zod";
 import {
@@ -139,7 +140,7 @@ const SceneEvidence = z.object({
   }),
   sceneInput: EvidenceInputSchema,
 });
-const ExpectedCompilation = z
+export const CompilationSchema = z
   .object({
     authoring: z
       .object({ digest: z.string().regex(/^[a-f0-9]{64}$/u) })
@@ -255,7 +256,7 @@ const bindCompilation = (
   tenantId: string,
   expected: unknown,
 ): Compilation => {
-  const parsed = ExpectedCompilation.parse(expected);
+  const parsed = CompilationSchema.parse(expected);
   const compilation = compileEvidenceScene(evidence, tenantId);
   if (
     compilation.authoring.digest !== parsed.authoring.digest ||
@@ -486,15 +487,18 @@ export async function renderWorkflowDelivery(
     { cwd: input.workspace, signal: input.signal },
   );
   const qc = validateDelivery(probe.stdout);
-  const output = await readFile(input.outputPath);
+  const outputHash = createHash("sha256");
+  for await (const chunk of createReadStream(input.outputPath))
+    outputHash.update(chunk);
+  const output = await stat(input.outputPath);
   return {
     status: "PASS",
     protocol: "rvs.render-report.v1",
     mode: input.mode,
     jobId: input.jobId,
     attemptId: input.attemptId,
-    outputSha256: createHash("sha256").update(output).digest("hex"),
-    outputBytes: output.byteLength,
+    outputSha256: outputHash.digest("hex"),
+    outputBytes: output.size,
     ir: {
       authoringDigest: compilation.authoring.digest,
       sceneDigest: compilation.scene.digest,

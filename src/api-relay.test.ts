@@ -5,7 +5,7 @@ import {
   type IncomingHttpHeaders,
   type Server,
 } from "node:http";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createApiRelayServer } from "./api-relay.js";
 
 type Response = Readonly<{
@@ -140,5 +140,25 @@ describe("API relay", () => {
     });
     expect(confined.status).toBe(400);
     expect(arbitraryTargetRequests).toBe(0);
+  });
+
+  it("times out an upstream request at the configured deadline", async () => {
+    const upstreamPort = await listen(
+      createServer((_incoming, outgoing) => {
+        setTimeout(() => outgoing.end("late"), 80);
+      }),
+    );
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const relayPort = await listen(
+        createApiRelayServer(`http://127.0.0.1:${upstreamPort}`, 20),
+      );
+
+      await expect(
+        send(relayPort, { method: "GET", path: "/slow" }),
+      ).resolves.toMatchObject({ status: 502, body: "upstream unavailable" });
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 });

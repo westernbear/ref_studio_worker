@@ -125,7 +125,7 @@ describe("delivery contract", () => {
     const probeCommands: string[][] = [];
     let captured: BrowserCaptureInput | undefined;
     const runCommand: CommandRunner = async (command, args) => {
-      if (command === "ffprobe") {
+      if (command.endsWith("ffprobe")) {
         probeCommands.push([...args]);
         return { stdout: JSON.stringify(probe), stderr: "" };
       }
@@ -213,6 +213,9 @@ describe("delivery contract", () => {
       );
       expect(report).toMatchObject({
         status: "PASS",
+        outputSha256:
+          "721c9525ade2ea8903d343ef25cf68b9bf4ab0aad56bb7b01fbe48d09bc7fcf4",
+        outputBytes: 5,
         qc: {
           fps: 30,
           frameCount: 120,

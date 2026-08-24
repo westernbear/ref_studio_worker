@@ -119,27 +119,30 @@ const dependencies = () => {
   const events: string[] = [];
   const compiledEvidence = evidence();
   const api = {
-    downloadSource: vi.fn(async () => {
+    downloadSource: vi.fn(async (_jobId, destinationPath) => {
       events.push("download");
-      return Uint8Array.from([0, 0, 0, 16, 102, 116, 121, 112]);
+      await writeFile(
+        destinationPath,
+        Uint8Array.from([0, 0, 0, 16, 102, 116, 121, 112]),
+      );
     }),
     reportProgress: vi.fn(async (_jobId, progress) => {
       events.push(`progress:${progress.stage}`);
     }),
-    uploadArtifact: vi.fn(async (_jobId, bytes) => {
+    uploadArtifact: vi.fn(async (_jobId, sourcePath) => {
       events.push("upload");
       return {
         artifactId: "artifact-a",
         sha256: "c".repeat(64),
-        sizeBytes: bytes.byteLength,
+        sizeBytes: (await readFile(sourcePath)).byteLength,
       };
     }),
-    uploadPreview: vi.fn(async (_jobId, bytes) => {
+    uploadPreview: vi.fn(async (_jobId, sourcePath) => {
       events.push("upload-preview");
       return {
         artifactId: "preview-a",
         sha256: "d".repeat(64),
-        sizeBytes: bytes.byteLength,
+        sizeBytes: (await readFile(sourcePath)).byteLength,
       };
     }),
   } satisfies WorkflowPipelineDependencies["api"];
@@ -263,6 +266,12 @@ describe("workflow job handler", () => {
       "progress:compiler:analysis",
       "progress:evidence",
     ]);
+    expect(fixture.api.downloadSource).toHaveBeenCalledWith(
+      "job-a",
+      expect.stringMatching(/[\\/]source\.mp4$/u),
+      expect.any(AbortSignal),
+    );
+    expect(fixture.api.downloadSource).toHaveBeenCalledOnce();
     expect(fixture.api.uploadPreview).not.toHaveBeenCalled();
     expect(fixture.api.uploadArtifact).not.toHaveBeenCalled();
   });
@@ -300,25 +309,70 @@ describe("workflow job handler", () => {
       report: { status: "PASS", mode: "preview" },
     });
     expect(fixture.api.uploadPreview).toHaveBeenCalledOnce();
+    expect(fixture.api.uploadPreview).toHaveBeenCalledWith(
+      "job-a",
+      expect.stringMatching(/[\\/]delivery\.mp4$/u),
+      expect.any(AbortSignal),
+    );
     expect(fixture.api.uploadArtifact).not.toHaveBeenCalled();
   });
 
   it("renders the approved IR into the private delivery slot", async () => {
     const fixture = dependencies();
     const handler = createWorkflowJobHandler(fixture.dependencies);
+    const infoSpy = vi.spyOn(console, "info").mockImplementation(() => {});
+    let uploadLogs: string[] = [];
 
-    await expect(
-      handler(job("render"), new AbortController().signal),
-    ).resolves.toMatchObject({
-      protocol: "rvs.worker.v1",
-      phase: "render",
-      artifactId: "artifact-a",
-      report: { status: "PASS", mode: "delivery" },
-    });
+    try {
+      await expect(
+        handler(job("render"), new AbortController().signal),
+      ).resolves.toMatchObject({
+        protocol: "rvs.worker.v1",
+        phase: "render",
+        artifactId: "artifact-a",
+        report: { status: "PASS", mode: "delivery" },
+      });
+      uploadLogs = infoSpy.mock.calls
+        .map((call) => String(call[0]))
+        .filter((line) => line.includes("worker.artifact.upload"));
+    } finally {
+      infoSpy.mockRestore();
+    }
     expect(fixture.events).toContain("render");
     expect(fixture.events.at(-2)).toBe("progress:upload");
     expect(fixture.events.at(-1)).toBe("upload");
     expect(fixture.api.uploadArtifact).toHaveBeenCalledOnce();
+    expect(fixture.api.uploadArtifact).toHaveBeenCalledWith(
+      "job-a",
+      expect.stringMatching(/[\\/]delivery\.mp4$/u),
+      expect.any(AbortSignal),
+    );
+    expect(uploadLogs).toEqual([
+      expect.stringContaining('"event":"worker.artifact.upload.started"'),
+      expect.stringContaining('"event":"worker.artifact.upload.completed"'),
+    ]);
+    expect(uploadLogs[0]).toContain('"tenantId":"ten_a"');
+    expect(uploadLogs[0]).toContain('"phase":"render"');
+    expect(uploadLogs[0]).toContain('"deletionEpoch":0');
+    expect(uploadLogs[0]).toContain('"restoreEpoch":0');
+    expect(uploadLogs[1]).toContain('"artifactId":"artifact-a"');
+  });
+
+  it("rejects tampered evidence and browser-pass digests before rendering", async () => {
+    const fixture = dependencies();
+    const handler = createWorkflowJobHandler(fixture.dependencies);
+    const evidenceJob = job("render");
+    const browserPassJob = job("render");
+    evidenceJob.payload.evidenceDigest = "0".repeat(64);
+    browserPassJob.payload.browserPassSpecDigest = "0".repeat(64);
+
+    await expect(
+      handler(evidenceJob, new AbortController().signal),
+    ).rejects.toThrow("WORKER_EVIDENCE_DIGEST_MISMATCH");
+    await expect(
+      handler(browserPassJob, new AbortController().signal),
+    ).rejects.toThrow("IR_VERSION_MISMATCH");
+    expect(fixture.dependencies.renderDelivery).not.toHaveBeenCalled();
   });
 
   it("aborts render and assembly at the configured deadline", async () => {
@@ -343,6 +397,37 @@ describe("workflow job handler", () => {
     await expect(
       handler(job("render"), new AbortController().signal),
     ).rejects.toThrow("RENDER_DEADLINE");
+    expect(fixture.api.uploadArtifact).not.toHaveBeenCalled();
+  });
+
+  it("preserves parent cancellation during render", async () => {
+    const fixture = dependencies();
+    const controller = new AbortController();
+    const cancellation = new Error("WORKER_JOB_CANCELLED");
+    let notifyRenderStarted: (() => void) | undefined;
+    const renderStarted = new Promise<void>((resolve) => {
+      notifyRenderStarted = () => resolve();
+    });
+    const renderDelivery: WorkflowPipelineDependencies["renderDelivery"] =
+      vi.fn(
+        async ({ signal }) =>
+          new Promise<Record<string, unknown>>((_resolve, reject) => {
+            signal.addEventListener("abort", () => reject(signal.reason), {
+              once: true,
+            });
+            notifyRenderStarted?.();
+          }),
+      );
+    const handler = createWorkflowJobHandler({
+      ...fixture.dependencies,
+      renderDelivery,
+    });
+
+    const result = handler(job("render"), controller.signal);
+    await renderStarted;
+    controller.abort(cancellation);
+
+    await expect(result).rejects.toBe(cancellation);
     expect(fixture.api.uploadArtifact).not.toHaveBeenCalled();
   });
 });

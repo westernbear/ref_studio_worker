@@ -4,5 +4,6 @@ node_modules
 .pnpm-store
 dist
 compiler/.venv
+compiler/.pytest_cache
 **/__pycache__
 *.pyc

@@ -14,6 +14,21 @@ export type CommandRunner = (
 ) => Promise<CommandResult>;
 
 const MAX_DIAGNOSTIC_BYTES = 64 * 1024;
+export const PROCESS_TERMINATION_GRACE_MS = 3_000;
+
+type KillableProcess = Readonly<{
+  kill(signal?: NodeJS.Signals): boolean;
+}>;
+
+export const terminateProcess = (child: KillableProcess): (() => void) => {
+  child.kill("SIGTERM");
+  const escalation = setTimeout(
+    () => child.kill("SIGKILL"),
+    PROCESS_TERMINATION_GRACE_MS,
+  );
+  escalation.unref();
+  return () => clearTimeout(escalation);
+};
 
 export const runCommand: CommandRunner = async (command, args, options) => {
   if (options.signal.aborted) throw new Error("WORKER_JOB_CANCELLED");
@@ -30,11 +45,20 @@ export const runCommand: CommandRunner = async (command, args, options) => {
   child.stderr.on("data", (chunk: Buffer) => {
     stderr = (stderr + chunk.toString()).slice(-MAX_DIAGNOSTIC_BYTES);
   });
-  const stop = (): void => {
-    child.kill("SIGTERM");
+  let stoppedFor: "WORKER_JOB_CANCELLED" | "WORKER_PROCESS_TIMEOUT" | null =
+    null;
+  let clearEscalation = (): void => {};
+  const stop = (reason: NonNullable<typeof stoppedFor>): void => {
+    if (stoppedFor !== null) return;
+    stoppedFor = reason;
+    clearEscalation = terminateProcess(child);
   };
-  options.signal.addEventListener("abort", stop, { once: true });
-  const timeout = setTimeout(stop, options.timeoutMs ?? 1_800_000);
+  const abort = (): void => stop("WORKER_JOB_CANCELLED");
+  options.signal.addEventListener("abort", abort, { once: true });
+  const timeout = setTimeout(
+    () => stop("WORKER_PROCESS_TIMEOUT"),
+    options.timeoutMs ?? 1_800_000,
+  );
   try {
     const result = await new Promise<Readonly<{ code: number | null }>>(
       (resolve, reject) => {
@@ -42,7 +66,7 @@ export const runCommand: CommandRunner = async (command, args, options) => {
         child.once("close", (code) => resolve({ code }));
       },
     );
-    if (options.signal.aborted) throw new Error("WORKER_JOB_CANCELLED");
+    if (stoppedFor !== null) throw new Error(stoppedFor);
     if (result.code !== 0)
       throw new Error(
         `WORKER_PROCESS_FAILED:${command}:${stderr.replaceAll(options.cwd, "[workspace]").trim().slice(0, 2_000)}`,
@@ -50,6 +74,7 @@ export const runCommand: CommandRunner = async (command, args, options) => {
     return { stdout, stderr };
   } finally {
     clearTimeout(timeout);
-    options.signal.removeEventListener("abort", stop);
+    clearEscalation();
+    options.signal.removeEventListener("abort", abort);
   }
 };

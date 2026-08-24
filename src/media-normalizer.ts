@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { createReadStream } from "node:fs";
+import { stat } from "node:fs/promises";
 import { z } from "zod";
 import type { CommandRunner } from "./process-runner.js";
 
@@ -209,10 +210,13 @@ export async function normalizeMedia(
     Number(frameProbe.data.streams[0]?.nb_read_frames) !== request.frameCount
   )
     throw new Error("NORMALIZED_ARTIFACT_CORRUPT");
-  const bytes = await readFile(request.outputPath);
-  if (bytes.byteLength === 0) throw new Error("NORMALIZED_ARTIFACT_CORRUPT");
+  if ((await stat(request.outputPath)).size === 0)
+    throw new Error("NORMALIZED_ARTIFACT_CORRUPT");
+  const outputHash = createHash("sha256");
+  for await (const chunk of createReadStream(request.outputPath))
+    outputHash.update(chunk);
   return {
-    sha256: createHash("sha256").update(bytes).digest("hex"),
+    sha256: outputHash.digest("hex"),
     durationMs: 4_000,
     fps: request.sourceFps,
     frameCount: request.frameCount,

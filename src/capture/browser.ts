@@ -2,10 +2,15 @@ import { createHash } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
 import { access, mkdir, readFile, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 import { z } from "zod";
 import type { RenderedFrame } from "../render-app/index.js";
 import type { BrowserPassSpec, SceneIR } from "../scene/compile.js";
+import {
+  PROCESS_TERMINATION_GRACE_MS,
+  terminateProcess,
+} from "../process-runner.js";
 import {
   createRenderPlan,
   SHADER_NAMES,
@@ -15,6 +20,8 @@ import {
   type ContextProbe,
   type ShaderDiagnostics,
 } from "../render-app/webgl.js";
+
+// allow: SIZE_OK - the deterministic renderer page is an inline data template.
 
 const CHROMIUM_VERSION = "151.0.7922.138";
 const VIEWPORT = { width: 1080, height: 1920 } as const;
@@ -58,13 +65,24 @@ type PendingRequest = {
   readonly reject: (reason: Error) => void;
 };
 
-class CdpClient {
+export class CdpClient {
   readonly #socket: WebSocket;
+  readonly #signal: AbortSignal;
+  readonly #abort: () => void;
   readonly #pending = new Map<number, PendingRequest>();
   #nextId = 1;
 
-  private constructor(socket: WebSocket) {
+  private constructor(socket: WebSocket, signal: AbortSignal) {
     this.#socket = socket;
+    this.#signal = signal;
+    this.#abort = () => {
+      this.#rejectPending(
+        new Error("WORKER_JOB_CANCELLED", { cause: signal.reason }),
+      );
+      socket.close();
+    };
+    signal.addEventListener("abort", this.#abort, { once: true });
+    if (signal.aborted) this.#abort();
     socket.addEventListener("message", (event) => {
       const message = JSON.parse(String(event.data)) as CdpResponse;
       if (message.id === undefined) return;
@@ -78,43 +96,47 @@ class CdpClient {
       else pending.resolve(message.result);
     });
     socket.addEventListener("close", () => {
-      for (const pending of this.#pending.values())
-        pending.reject(new Error("CHROMIUM_CDP_CLOSED"));
-      this.#pending.clear();
+      signal.removeEventListener("abort", this.#abort);
+      this.#rejectPending(new Error("CHROMIUM_CDP_CLOSED"));
     });
+  }
+
+  #rejectPending(error: Error): void {
+    for (const pending of this.#pending.values()) pending.reject(error);
+    this.#pending.clear();
   }
 
   static async connect(url: string, signal: AbortSignal): Promise<CdpClient> {
     if (signal.aborted) throw new Error("WORKER_JOB_CANCELLED");
     const socket = new WebSocket(url);
-    const client = new CdpClient(socket);
     await new Promise<void>((resolve, reject) => {
+      const cleanup = (): void => {
+        signal.removeEventListener("abort", abort);
+        socket.removeEventListener("open", opened);
+        socket.removeEventListener("error", failed);
+      };
       const abort = (): void => {
+        cleanup();
         socket.close();
         reject(new Error("WORKER_JOB_CANCELLED"));
       };
+      const opened = (): void => {
+        cleanup();
+        resolve();
+      };
+      const failed = (): void => {
+        cleanup();
+        reject(new Error("CHROMIUM_CDP_CONNECTION_FAILED"));
+      };
       signal.addEventListener("abort", abort, { once: true });
-      socket.addEventListener(
-        "open",
-        () => {
-          signal.removeEventListener("abort", abort);
-          resolve();
-        },
-        { once: true },
-      );
-      socket.addEventListener(
-        "error",
-        () => {
-          signal.removeEventListener("abort", abort);
-          reject(new Error("CHROMIUM_CDP_CONNECTION_FAILED"));
-        },
-        { once: true },
-      );
+      socket.addEventListener("open", opened, { once: true });
+      socket.addEventListener("error", failed, { once: true });
     });
-    return client;
+    return new CdpClient(socket, signal);
   }
 
   async send<T>(method: string, params: object = {}): Promise<T> {
+    if (this.#signal.aborted) throw new Error("WORKER_JOB_CANCELLED");
     const id = this.#nextId++;
     const response = new Promise<unknown>((resolve, reject) => {
       this.#pending.set(id, { resolve, reject });
@@ -124,6 +146,8 @@ class CdpClient {
   }
 
   close(): void {
+    this.#signal.removeEventListener("abort", this.#abort);
+    this.#rejectPending(new Error("CHROMIUM_CDP_CLOSED"));
     this.#socket.close();
   }
 }
@@ -392,16 +416,15 @@ const screenshot = async (client: CdpClient): Promise<Uint8Array> => {
 
 const stopBrowser = async (child: ChildProcess): Promise<void> => {
   if (child.exitCode !== null) return;
-  child.kill("SIGTERM");
+  const exited = new Promise<void>((resolve) =>
+    child.once("exit", () => resolve()),
+  );
+  const clearEscalation = terminateProcess(child);
   await Promise.race([
-    new Promise<void>((resolve) => child.once("exit", () => resolve())),
-    new Promise<void>((resolve) =>
-      setTimeout(() => {
-        child.kill("SIGKILL");
-        resolve();
-      }, 3_000),
-    ),
+    exited,
+    delay(PROCESS_TERMINATION_GRACE_MS * 2, undefined, { ref: false }),
   ]);
+  clearEscalation();
 };
 
 export async function captureBrowserFrames(

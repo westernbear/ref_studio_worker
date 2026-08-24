@@ -1358,6 +1358,16 @@ def compile_bundle(
     colors = derive_palette(visual)
     text_tracks = [interpolate_track(track, fps) for track in track_text(ocr)]
     surface_tracks = [interpolate_track(track, fps) for track in track_surfaces(surfaces)]
+    tracking = [
+        *[
+            tracking_measurements(f"text-{index:02d}", samples, fps)
+            for index, samples in enumerate(text_tracks)
+        ],
+        *[
+            tracking_measurements(f"ui-surface-{index:02d}", samples, fps)
+            for index, samples in enumerate(surface_tracks)
+        ],
+    ]
     scene = scene_input(
         request,
         frame_count,
@@ -1390,18 +1400,7 @@ def compile_bundle(
             "depth": {
                 "engine": "MiDaS v2.1 small",
                 "medianNormalized": depths,
-                "ownerSamples": [
-                    *[
-                        tracking_measurements(f"text-{index:02d}", samples, fps)
-                        for index, samples in enumerate(text_tracks)
-                    ],
-                    *[
-                        tracking_measurements(
-                            f"ui-surface-{index:02d}", samples, fps
-                        )
-                        for index, samples in enumerate(surface_tracks)
-                    ],
-                ],
+                "ownerSamples": tracking,
             },
             "camera": {
                 "method": "foreground-masked RANSAC background homography",
@@ -1417,16 +1416,7 @@ def compile_bundle(
                 },
                 "frames": camera,
             },
-            "tracking": [
-                *[
-                    tracking_measurements(f"text-{index:02d}", samples, fps)
-                    for index, samples in enumerate(text_tracks)
-                ],
-                *[
-                    tracking_measurements(f"ui-surface-{index:02d}", samples, fps)
-                    for index, samples in enumerate(surface_tracks)
-                ],
-            ],
+            "tracking": tracking,
             "effects": visual,
             "rhythm": rhythm_measurements(visual, audio, fps),
             "audio": {

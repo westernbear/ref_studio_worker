@@ -1,5 +1,8 @@
-import { describe, expect, it, vi } from "vitest";
-import { createWorkerApi } from "./worker-api.js";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createWorkerApi, WorkerApiError } from "./worker-api.js";
 import { runWorkerDaemon, WORKER_JOB_HANDLER_FAILED } from "./worker-daemon.js";
 import type { WorkerConfig } from "./worker-config.js";
 
@@ -13,6 +16,39 @@ const config: WorkerConfig = {
   apiRequestTimeoutMs: 30_000,
   mediaRequestTimeoutMs: 1_800_000,
 };
+
+const createMediaApi = (
+  source: () => Response | Promise<Response>,
+): ReturnType<typeof createWorkerApi> =>
+  createWorkerApi(config, async (input) => {
+    const path = new URL(input.toString()).pathname;
+    if (path.endsWith("/register"))
+      return Response.json({
+        workerId: "worker-test",
+        sessionToken: "session-token",
+      });
+    if (path.endsWith("/claim"))
+      return Response.json({
+        job: {
+          jobId: "job-a",
+          attemptId: "attempt-a",
+          leaseToken: "lease-token",
+          leaseExpiresAt: "2026-08-23T01:00:00.000Z",
+          payload: {},
+        },
+      });
+    return source();
+  });
+
+let temporaryDirectory = "";
+
+beforeEach(async () => {
+  temporaryDirectory = await mkdtemp(join(tmpdir(), "rvs-worker-test-"));
+});
+
+afterEach(async () => {
+  await rm(temporaryDirectory, { recursive: true, force: true });
+});
 
 describe("worker daemon API", () => {
   it("registers, heartbeats, and polls using typed payloads", async () => {
@@ -58,8 +94,11 @@ describe("worker daemon API", () => {
     expect(await requests[0]?.text()).not.toContain("secret-token");
   });
 
-  it("downloads source bytes, reports progress, and uploads rendered media", async () => {
+  it("streams source and rendered media through file paths", async () => {
+    // Given
     const requests: Request[] = [];
+    const uploadedBodies: Uint8Array[] = [];
+    const sourceArrayBuffer = vi.fn(async () => new ArrayBuffer(0));
     const api = createWorkerApi(config, async (input, init) => {
       const request = new Request(input, init);
       requests.push(request);
@@ -79,25 +118,36 @@ describe("worker daemon API", () => {
             payload: {},
           },
         });
-      if (path.endsWith("/source"))
-        return new Response(Uint8Array.from([1, 2, 3]), {
+      if (path.endsWith("/source")) {
+        const response = new Response(Uint8Array.from([1, 2, 3]), {
           headers: { "content-type": "video/mp4" },
         });
-      if (path.endsWith("artifact"))
+        Object.defineProperty(response, "arrayBuffer", {
+          value: sourceArrayBuffer,
+        });
+        return response;
+      }
+      if (path.endsWith("artifact")) {
+        uploadedBodies.push(new Uint8Array(await request.arrayBuffer()));
         return Response.json({
           artifactId: "artifact-a",
           sha256: "a".repeat(64),
           sizeBytes: 3,
         });
+      }
       return Response.json({ ok: true });
     });
     const signal = new AbortController().signal;
+    const sourcePath = join(temporaryDirectory, "source.mp4");
+    const artifactPath = join(temporaryDirectory, "artifact.mp4");
+    const previewPath = join(temporaryDirectory, "preview.mp4");
+    await writeFile(artifactPath, Uint8Array.from([4, 5, 6]));
+    await writeFile(previewPath, Uint8Array.from([7, 8, 9]));
     await api.register();
     await api.claim();
 
-    await expect(api.downloadSource("job-a", signal)).resolves.toEqual(
-      Uint8Array.from([1, 2, 3]),
-    );
+    // When
+    await api.downloadSource("job-a", sourcePath, signal);
     await api.reportProgress(
       "job-a",
       {
@@ -110,12 +160,15 @@ describe("worker daemon API", () => {
       signal,
     );
     await expect(
-      api.uploadArtifact("job-a", Uint8Array.from([4, 5, 6]), signal),
+      api.uploadArtifact("job-a", artifactPath, signal),
     ).resolves.toMatchObject({ artifactId: "artifact-a", sizeBytes: 3 });
     await expect(
-      api.uploadPreview("job-a", Uint8Array.from([7, 8, 9]), signal),
+      api.uploadPreview("job-a", previewPath, signal),
     ).resolves.toMatchObject({ artifactId: "artifact-a", sizeBytes: 3 });
 
+    // Then
+    expect([...(await readFile(sourcePath))]).toEqual([1, 2, 3]);
+    expect(sourceArrayBuffer).not.toHaveBeenCalled();
     expect(
       requests
         .slice(2)
@@ -133,14 +186,138 @@ describe("worker daemon API", () => {
         .every((request) => request.headers.has("X-Worker-Lease")),
     ).toBe(true);
     expect(requests[2]?.headers.get("X-Worker-Lease")).toBe("lease-token");
-    expect(requests[4]?.headers.get("content-type")).toBe(
-      "application/octet-stream",
-    );
-    expect(new Uint8Array(await requests[4]!.arrayBuffer())).toEqual(
+    expect(requests[4]?.headers.get("content-type")).toBe("video/mp4");
+    expect(requests[4]?.headers.get("content-length")).toBe("3");
+    expect(requests[5]?.headers.get("content-length")).toBe("3");
+    expect(uploadedBodies).toEqual([
       Uint8Array.from([4, 5, 6]),
-    );
-    expect(new Uint8Array(await requests[5]!.arrayBuffer())).toEqual(
       Uint8Array.from([7, 8, 9]),
+    ]);
+  });
+
+  it("removes an empty source destination", async () => {
+    // Given
+    const api = createMediaApi(
+      () =>
+        new Response(new Uint8Array(), {
+          headers: { "content-type": "video/mp4" },
+        }),
+    );
+    const destinationPath = join(temporaryDirectory, "empty.mp4");
+    await api.register();
+    await api.claim();
+
+    // When / Then
+    await expect(
+      api.downloadSource(
+        "job-a",
+        destinationPath,
+        new AbortController().signal,
+      ),
+    ).rejects.toThrow("invalid media");
+    await expect(readFile(destinationPath)).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  });
+
+  it("removes a partial source destination when streaming fails", async () => {
+    // Given
+    const api = createMediaApi(
+      () =>
+        new Response(
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(Uint8Array.from([1, 2, 3]));
+              queueMicrotask(() =>
+                controller.error(new Error("stream failed")),
+              );
+            },
+          }),
+          { headers: { "content-type": "video/mp4" } },
+        ),
+    );
+    const destinationPath = join(temporaryDirectory, "partial.mp4");
+    await api.register();
+    await api.claim();
+
+    // When / Then
+    await expect(
+      api.downloadSource(
+        "job-a",
+        destinationPath,
+        new AbortController().signal,
+      ),
+    ).rejects.toThrow("stream failed");
+    await expect(readFile(destinationPath)).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  });
+
+  it("removes a partial source destination when streaming is aborted", async () => {
+    // Given
+    const controller = new AbortController();
+    let chunkSent = false;
+    const api = createMediaApi(
+      () =>
+        new Response(
+          new ReadableStream<Uint8Array>({
+            pull(streamController) {
+              if (chunkSent) return;
+              chunkSent = true;
+              streamController.enqueue(new Uint8Array(64 * 1024));
+              queueMicrotask(() => controller.abort(new Error("cancelled")));
+            },
+          }),
+          { headers: { "content-type": "video/mp4" } },
+        ),
+    );
+    const destinationPath = join(temporaryDirectory, "aborted.mp4");
+    await api.register();
+    await api.claim();
+
+    // When / Then
+    await expect(
+      api.downloadSource("job-a", destinationPath, controller.signal),
+    ).rejects.toMatchObject({
+      path: "/v1/workers/worker-test/jobs/job-a/source",
+      status: null,
+    });
+    await expect(readFile(destinationPath)).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  });
+
+  it("preserves source response diagnostics", async () => {
+    // Given
+    const api = createMediaApi(() =>
+      Response.json(
+        {
+          error: {
+            code: "SOURCE_MISSING",
+            message: "Source media was not found.",
+          },
+        },
+        { status: 404 },
+      ),
+    );
+    await api.register();
+    await api.claim();
+
+    // When / Then
+    await expect(
+      api.downloadSource(
+        "job-a",
+        join(temporaryDirectory, "missing.mp4"),
+        new AbortController().signal,
+      ),
+    ).rejects.toEqual(
+      expect.objectContaining({
+        name: WorkerApiError.name,
+        path: "/v1/workers/worker-test/jobs/job-a/source",
+        status: 404,
+        code: "SOURCE_MISSING",
+        message: expect.stringContaining("Source media was not found"),
+      }),
     );
   });
 
@@ -324,6 +501,65 @@ describe("worker daemon API", () => {
     vi.useRealTimers();
   });
 
+  it("combines outer cancellation with the claimed-job signal", async () => {
+    // Given
+    const calls: string[] = [];
+    let resolveStarted: () => void = () => {};
+    const started = new Promise<void>((resolve) => {
+      resolveStarted = resolve;
+    });
+    let observedReason: unknown = null;
+    const api = {
+      register: async () => {},
+      heartbeat: async () => {},
+      claim: async () => ({
+        jobId: "job-a",
+        attemptId: "attempt-a",
+        leaseToken: "lease-token",
+        leaseExpiresAt: "2026-08-23T01:00:00.000Z",
+        payload: {},
+      }),
+      complete: async () => {
+        calls.push("complete");
+      },
+      fail: async () => {
+        calls.push("fail");
+      },
+      acknowledgeCancellation: async () => {
+        calls.push("cancelled");
+      },
+    };
+    const controller = new AbortController();
+    const run = runWorkerDaemon(
+      config,
+      api,
+      controller.signal,
+      async (_job, signal) => {
+        resolveStarted();
+        return await new Promise((_resolve, reject) => {
+          signal.addEventListener(
+            "abort",
+            () => {
+              observedReason = signal.reason;
+              reject(signal.reason);
+            },
+            { once: true },
+          );
+        });
+      },
+    );
+    await started;
+    const reason = new Error("outer cancellation");
+
+    // When
+    controller.abort(reason);
+    await run;
+
+    // Then
+    expect(observedReason).toBe(reason);
+    expect(calls).toEqual([]);
+  });
+
   it("logs claimed jobs before running the handler", async () => {
     const infoSpy = vi.spyOn(console, "info").mockImplementation(() => {});
     const api = {
@@ -334,7 +570,12 @@ describe("worker daemon API", () => {
         attemptId: "attempt-a",
         leaseToken: "lease-token",
         leaseExpiresAt: "2026-08-23T01:00:00.000Z",
-        payload: {},
+        payload: {
+          tenantId: "tenant-a",
+          phase: "render",
+          deletionEpoch: 2,
+          restoreEpoch: 3,
+        },
       }),
       complete: async () => {},
       fail: async () => {},
@@ -355,6 +596,42 @@ describe("worker daemon API", () => {
     expect(logLine).toContain('"workerId":"worker-test"');
     expect(logLine).toContain('"jobId":"job-a"');
     expect(logLine).toContain('"attemptId":"attempt-a"');
+    expect(logLine).toContain('"tenantId":"tenant-a"');
+    expect(logLine).toContain('"phase":"render"');
+    expect(logLine).toContain('"deletionEpoch":2');
+    expect(logLine).toContain('"restoreEpoch":3');
+  });
+
+  it("reports deterministic handler error codes", async () => {
+    const failures: string[] = [];
+    const controller = new AbortController();
+    const api = {
+      register: async () => {},
+      heartbeat: async () => {},
+      claim: async () => ({
+        jobId: "job-a",
+        attemptId: "attempt-a",
+        leaseToken: "lease-token",
+        leaseExpiresAt: "2026-08-23T01:00:00.000Z",
+        payload: {},
+      }),
+      complete: async () => {},
+      fail: async (_jobId: string, message: string) => {
+        failures.push(message);
+        controller.abort();
+      },
+      acknowledgeCancellation: async () => {},
+    };
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await runWorkerDaemon(config, api, controller.signal, async () => {
+        throw new Error("IR_VERSION_MISMATCH");
+      });
+    } finally {
+      errorSpy.mockRestore();
+    }
+
+    expect(failures).toEqual(["IR_VERSION_MISMATCH"]);
   });
 
   it("reports a stable failure without exposing handler errors", async () => {
@@ -468,6 +745,41 @@ describe("worker daemon API", () => {
       expect.stringContaining('"event":"worker.job.cancelling"'),
       expect.stringContaining('"event":"worker.job.cancelled"'),
     ]);
+  });
+
+  it("acknowledges cancellation when daemon shutdown races the handler error", async () => {
+    const calls: string[] = [];
+    const controller = new AbortController();
+    const api = {
+      register: async () => {},
+      heartbeat: async () => {},
+      claim: async () => ({
+        jobId: "job-a",
+        attemptId: "attempt-a",
+        leaseToken: "lease-token",
+        leaseExpiresAt: "2026-08-23T01:00:00.000Z",
+        payload: {},
+      }),
+      complete: async () => calls.push("complete"),
+      fail: async () => calls.push("fail"),
+      acknowledgeCancellation: async () => calls.push("cancelled"),
+    };
+    const infoSpy = vi.spyOn(console, "info").mockImplementation(() => {});
+    try {
+      await runWorkerDaemon(config, api, controller.signal, async () => {
+        controller.abort();
+        throw new WorkerApiError(
+          "/progress",
+          409,
+          "cancellation requested",
+          "CANCEL_REQUESTED",
+        );
+      });
+    } finally {
+      infoSpy.mockRestore();
+    }
+
+    expect(calls).toEqual(["cancelled"]);
   });
 
   it("stops polling when its signal is cancelled", async () => {

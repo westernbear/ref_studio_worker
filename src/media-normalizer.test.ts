@@ -64,7 +64,7 @@ describe("normalizeMedia", () => {
     vi.stubEnv("RVS_FFPROBE_PATH", "/opt/rvs/bin/ffprobe");
     vi.stubEnv("RVS_FFMPEG_PATH", "/opt/rvs/bin/ffmpeg");
 
-    await normalizeMedia(
+    const normalized = await normalizeMedia(
       {
         inputPath: join(workspace, "source.mp4"),
         outputPath,
@@ -90,5 +90,8 @@ describe("normalizeMedia", () => {
     expect(filter).not.toContain("scale=");
     expect(filter).not.toContain("pad=");
     expect(filter).not.toContain("crop=");
+    expect(normalized.sha256).toBe(
+      "b32b577d63a2a22e3a6b63b830d8b421e5f628091bfd3d9b9391b27c802fe23a",
+    );
   });
 });

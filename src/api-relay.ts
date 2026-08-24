@@ -9,6 +9,7 @@ import { request as httpsRequest } from "node:https";
 import { fileURLToPath } from "node:url";
 
 const RELAY_PORT = 8787;
+const DEFAULT_REQUEST_TIMEOUT_MS = 1_800_000;
 const HEALTH_PATH = "/_relay/healthz";
 const HOP_BY_HOP_HEADERS = new Set([
   "connection",
@@ -22,14 +23,6 @@ const HOP_BY_HOP_HEADERS = new Set([
   "upgrade",
 ]);
 
-type Upstream = Readonly<{
-  protocol: "http:" | "https:";
-  hostname: string;
-  host: string;
-  port: string;
-  pathPrefix: string;
-}>;
-
 export class ApiRelayConfigurationError extends Error {
   constructor(message: string) {
     super(message);
@@ -37,7 +30,7 @@ export class ApiRelayConfigurationError extends Error {
   }
 }
 
-const parseUpstream = (value: string): Upstream => {
+const parseUpstream = (value: string): URL => {
   let url: URL;
   try {
     url = new URL(value);
@@ -56,13 +49,7 @@ const parseUpstream = (value: string): Upstream => {
     throw new ApiRelayConfigurationError(
       "RVS_API_BASE_URL must not contain credentials, query, or fragment",
     );
-  return {
-    protocol: url.protocol,
-    hostname: url.hostname,
-    host: url.host,
-    port: url.port,
-    pathPrefix: url.pathname === "/" ? "" : url.pathname.replace(/\/$/u, ""),
-  };
+  return url;
 };
 
 const forwardedHeaders = (
@@ -91,8 +78,17 @@ const forwardedHeaders = (
 const rejectTargetOverride = (url: string | undefined): boolean =>
   url === undefined || !url.startsWith("/") || url.startsWith("//");
 
-export const createApiRelayServer = (upstreamBaseUrl: string): Server => {
+export const createApiRelayServer = (
+  upstreamBaseUrl: string,
+  requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
+): Server => {
+  if (!Number.isSafeInteger(requestTimeoutMs) || requestTimeoutMs < 1)
+    throw new ApiRelayConfigurationError(
+      "RVS_RELAY_REQUEST_TIMEOUT_MS must be a positive integer",
+    );
   const upstream = parseUpstream(upstreamBaseUrl);
+  const pathPrefix =
+    upstream.pathname === "/" ? "" : upstream.pathname.replace(/\/$/u, "");
   const server = createServer((incoming, outgoing) => {
     if (incoming.method === "GET" && incoming.url === HEALTH_PATH) {
       outgoing.writeHead(204).end();
@@ -112,7 +108,7 @@ export const createApiRelayServer = (upstreamBaseUrl: string): Server => {
         hostname: upstream.hostname,
         port: upstream.port,
         method: incoming.method,
-        path: `${upstream.pathPrefix}${incoming.url}`,
+        path: `${pathPrefix}${incoming.url}`,
         headers: forwardedHeaders(incoming.headers, upstream.host),
       },
       (response) => {
@@ -138,6 +134,12 @@ export const createApiRelayServer = (upstreamBaseUrl: string): Server => {
       outgoing.writeHead(502, { "content-type": "text/plain" });
       outgoing.end("upstream unavailable");
     });
+    const deadline = setTimeout(
+      () => proxied.destroy(new Error("upstream request timed out")),
+      requestTimeoutMs,
+    );
+    deadline.unref();
+    outgoing.once("close", () => clearTimeout(deadline));
     incoming.on("aborted", () => proxied.destroy());
     incoming.pipe(proxied);
   });
@@ -153,7 +155,12 @@ export const main = (env: NodeJS.ProcessEnv = process.env): void => {
   const upstream = env.RVS_API_BASE_URL;
   if (upstream === undefined)
     throw new ApiRelayConfigurationError("RVS_API_BASE_URL must be set");
-  const server = createApiRelayServer(upstream);
+  const server = createApiRelayServer(
+    upstream,
+    Number(
+      env.RVS_RELAY_REQUEST_TIMEOUT_MS ?? String(DEFAULT_REQUEST_TIMEOUT_MS),
+    ),
+  );
   server.on("error", (error) => {
     console.error(
       JSON.stringify({
