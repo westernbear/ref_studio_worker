@@ -1,3 +1,9 @@
+x-worker-env-files: &worker-env-files
+  - path: ../../.env
+    required: false
+  - path: .env
+    required: false
+
 services:
   api-relay:
     image: reference-video-studio-worker:1.0.0
@@ -8,6 +14,7 @@ services:
       dockerfile: Dockerfile
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    env_file: *worker-env-files
     environment:
       # Operator-facing remote API setting; the worker itself only sees this relay.
       RVS_API_BASE_URL: ${RVS_API_BASE_URL:-http://host.docker.internal:3200}
@@ -38,15 +45,12 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    env_file:
-      - path: .env
-        required: false
+    env_file: *worker-env-files
     depends_on:
       api-relay:
         condition: service_healthy
     environment:
       RVS_API_BASE_URL: http://api-relay:8787
-      RVS_WORKER_TOKEN: ${RVS_WORKER_TOKEN:?RVS_WORKER_TOKEN must be set}
       RVS_WORKER_CAPABILITIES: ${RVS_WORKER_CAPABILITIES:-compiler,renderer}
       RVS_API_REQUEST_TIMEOUT_MS: ${RVS_API_REQUEST_TIMEOUT_MS:-30000}
       RVS_MEDIA_REQUEST_TIMEOUT_MS: ${RVS_MEDIA_REQUEST_TIMEOUT_MS:-1800000}
