@@ -26,7 +26,10 @@ describe("worker daemon API", () => {
       return new Response(
         path.endsWith("/claim")
           ? JSON.stringify({ job: null })
-          : JSON.stringify({ workerId: "worker-test" }),
+          : JSON.stringify({
+              workerId: "worker-test",
+              sessionToken: "session-token",
+            }),
         { headers: { "content-type": "application/json" } },
       );
     };
@@ -46,6 +49,12 @@ describe("worker daemon API", () => {
     expect(requests[0]?.headers.get("authorization")).toBe(
       "Bearer secret-token",
     );
+    expect(requests[1]?.headers.get("authorization")).toBe(
+      "Bearer session-token",
+    );
+    expect(requests[2]?.headers.get("authorization")).toBe(
+      "Bearer session-token",
+    );
     expect(await requests[0]?.text()).not.toContain("secret-token");
   });
 
@@ -55,6 +64,21 @@ describe("worker daemon API", () => {
       const request = new Request(input, init);
       requests.push(request);
       const path = new URL(request.url).pathname;
+      if (path.endsWith("/register"))
+        return Response.json({
+          workerId: "worker-test",
+          sessionToken: "session-token",
+        });
+      if (path.endsWith("/claim"))
+        return Response.json({
+          job: {
+            jobId: "job-a",
+            attemptId: "attempt-a",
+            leaseToken: "lease-token",
+            leaseExpiresAt: "2026-08-23T01:00:00.000Z",
+            payload: {},
+          },
+        });
       if (path.endsWith("/source"))
         return new Response(Uint8Array.from([1, 2, 3]), {
           headers: { "content-type": "video/mp4" },
@@ -68,6 +92,8 @@ describe("worker daemon API", () => {
       return Response.json({ ok: true });
     });
     const signal = new AbortController().signal;
+    await api.register();
+    await api.claim();
 
     await expect(api.downloadSource("job-a", signal)).resolves.toEqual(
       Uint8Array.from([1, 2, 3]),
@@ -91,22 +117,29 @@ describe("worker daemon API", () => {
     ).resolves.toMatchObject({ artifactId: "artifact-a", sizeBytes: 3 });
 
     expect(
-      requests.map(
-        (request) => `${request.method} ${new URL(request.url).pathname}`,
-      ),
+      requests
+        .slice(2)
+        .map((request) => `${request.method} ${new URL(request.url).pathname}`),
     ).toEqual([
       "GET /v1/workers/worker-test/jobs/job-a/source",
       "POST /v1/workers/worker-test/jobs/job-a/progress",
       "POST /v1/workers/worker-test/jobs/job-a/artifact",
       "POST /v1/workers/worker-test/jobs/job-a/preview-artifact",
     ]);
-    expect(requests[2]?.headers.get("content-type")).toBe(
+    expect(requests[2]?.headers.get("content-type")).toBe(null);
+    expect(
+      requests
+        .slice(2)
+        .every((request) => request.headers.has("X-Worker-Lease")),
+    ).toBe(true);
+    expect(requests[2]?.headers.get("X-Worker-Lease")).toBe("lease-token");
+    expect(requests[4]?.headers.get("content-type")).toBe(
       "application/octet-stream",
     );
-    expect(new Uint8Array(await requests[2]!.arrayBuffer())).toEqual(
+    expect(new Uint8Array(await requests[4]!.arrayBuffer())).toEqual(
       Uint8Array.from([4, 5, 6]),
     );
-    expect(new Uint8Array(await requests[3]!.arrayBuffer())).toEqual(
+    expect(new Uint8Array(await requests[5]!.arrayBuffer())).toEqual(
       Uint8Array.from([7, 8, 9]),
     );
   });
@@ -154,9 +187,7 @@ describe("worker daemon API", () => {
       },
     );
 
-    await expect(api.complete("job-a", {})).rejects.toThrow(
-      "request timed out after 1ms",
-    );
+    await expect(api.register()).rejects.toThrow("request timed out after 1ms");
   });
 
   it("times out stalled worker API response bodies", async () => {
@@ -200,7 +231,13 @@ describe("worker daemon API", () => {
       },
       claim: async () => {
         calls.push("claim");
-        return { jobId: "job-a", attemptId: "attempt-a", payload: {} };
+        return {
+          jobId: "job-a",
+          attemptId: "attempt-a",
+          leaseToken: "lease-token",
+          leaseExpiresAt: "2026-08-23T01:00:00.000Z",
+          payload: {},
+        };
       },
       complete: async (jobId: string) => {
         calls.push(`complete:${jobId}`);
@@ -234,6 +271,59 @@ describe("worker daemon API", () => {
     ]);
   });
 
+  it("heartbeats during a claimed job and prevents stale completion when one fails", async () => {
+    vi.useFakeTimers();
+    const calls: string[] = [];
+    const api = {
+      register: async () => {},
+      heartbeat: vi.fn(async () => {
+        calls.push("heartbeat");
+        if (calls.length === 2) throw new Error("session-token");
+      }),
+      claim: vi.fn(async () => ({
+        jobId: "job-a",
+        attemptId: "attempt-a",
+        leaseToken: "lease-token",
+        leaseExpiresAt: "2026-08-23T01:00:00.000Z",
+        payload: {},
+      })),
+      complete: async () => {
+        calls.push("complete");
+      },
+      fail: async () => {
+        calls.push("fail");
+      },
+      acknowledgeCancellation: async () => {
+        calls.push("cancelled");
+      },
+    };
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const controller = new AbortController();
+    const run = runWorkerDaemon(
+      { ...config, heartbeatIntervalMs: 10 },
+      api,
+      controller.signal,
+      async (_job, signal) =>
+        await new Promise((resolve) =>
+          signal.addEventListener("abort", () => resolve({ ok: true }), {
+            once: true,
+          }),
+        ),
+    );
+    await vi.waitFor(() => expect(api.claim).toHaveBeenCalledOnce());
+    await vi.advanceTimersByTimeAsync(10);
+    controller.abort();
+    await run;
+
+    expect(calls).toEqual(["heartbeat", "heartbeat"]);
+    expect(String(errorSpy.mock.calls[0]?.[0])).toContain(
+      '"event":"worker.job.heartbeat_failed"',
+    );
+    expect(String(errorSpy.mock.calls[0]?.[0])).not.toContain("session-token");
+    errorSpy.mockRestore();
+    vi.useRealTimers();
+  });
+
   it("logs claimed jobs before running the handler", async () => {
     const infoSpy = vi.spyOn(console, "info").mockImplementation(() => {});
     const api = {
@@ -242,6 +332,8 @@ describe("worker daemon API", () => {
       claim: async () => ({
         jobId: "job-a",
         attemptId: "attempt-a",
+        leaseToken: "lease-token",
+        leaseExpiresAt: "2026-08-23T01:00:00.000Z",
         payload: {},
       }),
       complete: async () => {},
@@ -275,11 +367,14 @@ describe("worker daemon API", () => {
       claim: async () => ({
         jobId: "job-a",
         attemptId: "attempt-a",
+        leaseToken: "lease-token",
+        leaseExpiresAt: "2026-08-23T01:00:00.000Z",
         payload: {},
       }),
       complete: async () => {},
       fail: async (_jobId: string, message: string) => {
         failures.push(message);
+        controller.abort();
       },
       acknowledgeCancellation: async () => {},
     };
@@ -287,7 +382,6 @@ describe("worker daemon API", () => {
     let logLine = "";
     try {
       await runWorkerDaemon(config, api, controller.signal, async () => {
-        controller.abort();
         throw new Error("secret-token");
       });
       logLine = String(errorSpy.mock.calls[0]?.[0]);
@@ -314,7 +408,13 @@ describe("worker daemon API", () => {
       paths.push(path);
       if (path.endsWith("/claim"))
         return Response.json({
-          job: { jobId: "job-a", attemptId: "attempt-a", payload: {} },
+          job: {
+            jobId: "job-a",
+            attemptId: "attempt-a",
+            leaseToken: "lease-token",
+            leaseExpiresAt: "2026-08-23T01:00:00.000Z",
+            payload: {},
+          },
         });
       if (path.endsWith("/progress"))
         return Response.json(
@@ -330,7 +430,11 @@ describe("worker daemon API", () => {
         controller.abort();
         return Response.json({ ok: true });
       }
-      return Response.json({ workerId: "worker-test" });
+      return Response.json(
+        path.endsWith("/register")
+          ? { workerId: "worker-test", sessionToken: "session-token" }
+          : { workerId: "worker-test" },
+      );
     });
     let logLines: string[] = [];
     try {
@@ -375,7 +479,11 @@ describe("worker daemon API", () => {
       return new Response(
         new URL(input.toString()).pathname.endsWith("/claim")
           ? JSON.stringify({ job: null })
-          : JSON.stringify({ workerId: "worker-test" }),
+          : JSON.stringify(
+              calls === 1
+                ? { workerId: "worker-test", sessionToken: "session-token" }
+                : { workerId: "worker-test" },
+            ),
         { headers: { "content-type": "application/json" } },
       );
     });

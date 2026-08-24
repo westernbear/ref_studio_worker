@@ -189,7 +189,10 @@ export function createRenderApp(input: RenderInput): {
       if (!owner) throw new RenderAppError("OWNER_MISMATCH");
       const bounds = boundsAt(input.scene, track, frame);
       const content = owner.content ?? null;
-      const tag = owner.kind === "product-copy" ? "text" : "rect";
+      const tag =
+        owner.kind === "text-word" || owner.kind === "subtitle"
+          ? "text"
+          : "rect";
       const ownerEffects = input.scene.effects[owner.ownerId];
       const effects = {
         bloom: effectAt(ownerEffects?.["bloom"], frame),

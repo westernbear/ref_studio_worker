@@ -1,25 +1,58 @@
 services:
+  api-relay:
+    image: reference-video-studio-worker:1.0.0
+    restart: always
+    init: true
+    build:
+      context: .
+      dockerfile: Dockerfile
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      # Operator-facing remote API setting; the worker itself only sees this relay.
+      RVS_API_BASE_URL: ${RVS_API_BASE_URL:-http://host.docker.internal:3200}
+    command: ["node", "dist/api-relay.js"]
+    networks:
+      - worker-internal
+      - default
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - >-
+          require("node:http").get("http://127.0.0.1:8787/_relay/healthz",response=>process.exit(response.statusCode===204?0:1)).on("error",()=>process.exit(1))
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
   worker:
     image: reference-video-studio-worker:1.0.0
     restart: always
     init: true
     stop_grace_period: 30s
+    cpus: 4.0
+    mem_limit: 12g
+    pids_limit: 512
     build:
       context: .
       dockerfile: Dockerfile
     env_file:
       - path: .env
         required: false
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+    depends_on:
+      api-relay:
+        condition: service_healthy
     environment:
-      RVS_API_BASE_URL: ${RVS_API_BASE_URL:-http://host.docker.internal:3200}
-      RVS_WORKER_TOKEN: ${RVS_WORKER_TOKEN:-}
+      RVS_API_BASE_URL: http://api-relay:8787
+      RVS_WORKER_TOKEN: ${RVS_WORKER_TOKEN:?RVS_WORKER_TOKEN must be set}
       RVS_WORKER_CAPABILITIES: ${RVS_WORKER_CAPABILITIES:-compiler,renderer}
       RVS_API_REQUEST_TIMEOUT_MS: ${RVS_API_REQUEST_TIMEOUT_MS:-30000}
       RVS_MEDIA_REQUEST_TIMEOUT_MS: ${RVS_MEDIA_REQUEST_TIMEOUT_MS:-1800000}
       RVS_HEARTBEAT_INTERVAL_MS: ${RVS_HEARTBEAT_INTERVAL_MS:-30000}
       RVS_POLL_INTERVAL_MS: ${RVS_POLL_INTERVAL_MS:-5000}
+    networks:
+      - worker-internal
   worker-smoke:
     profiles: ["smoke"]
     image: reference-video-studio-worker:1.0.0
@@ -39,3 +72,8 @@ services:
         /opt/chrome/chrome --version
         /opt/compiler-venv/bin/python -m unittest compiler.test_pipeline
         /opt/compiler-venv/bin/python -c 'from compiler.pipeline import verify_models, load_models; verify_models(); models = load_models(); assert set(models) == {"torch", "rvm", "midas", "ocr"}'
+
+networks:
+  default: {}
+  worker-internal:
+    internal: true

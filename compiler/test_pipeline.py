@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from compiler.pipeline import scene_input, track_surfaces, track_text
+from compiler.pipeline import map_bounds, scene_input, track_surfaces, track_text
 
 
 def candidate(frame: int, text: str, x: int, confidence: float = 0.8) -> dict:
@@ -88,6 +88,47 @@ class TrackTextTest(unittest.TestCase):
                 for sample in scene["effects"]["text-00"]["bloom"]["samples"]
             ],
         )
+
+    def test_uniform_fit_maps_landscape_geometry_without_stretching(self) -> None:
+        self.assertEqual(
+            {"frame": 0, "x": 0, "y": 664, "width": 1080, "height": 592},
+            map_bounds(
+                {
+                    "frame": 0,
+                    "bounds": [0, 0, 1588, 870],
+                    "canvasWidth": 1588,
+                    "canvasHeight": 870,
+                }
+            ),
+        )
+
+    def test_scene_emits_foreground_owner_from_confident_matte_evidence(self) -> None:
+        mattes = [
+            {"frame": frame, "coverage": 0.2, "bounds": [100, 100, 200, 400]}
+            for frame in range(4)
+        ]
+        scene = scene_input(
+            {"tenantId": "ten_a"}, 4, 30, [], [], [], ["#101820"], mattes
+        )
+
+        self.assertIn(
+            "foreground-subject", [owner["ownerId"] for owner in scene["owners"]]
+        )
+        self.assertEqual([], scene["needsChoice"])
+
+    def test_scene_propagates_ambiguous_matte_ownership_as_needs_choice(self) -> None:
+        scene = scene_input(
+            {"tenantId": "ten_a"},
+            4,
+            30,
+            [],
+            [],
+            [],
+            ["#101820"],
+            [{"frame": 0, "coverage": 0.01, "bounds": [1, 1, 2, 2]}],
+        )
+
+        self.assertEqual("NEEDS_CHOICE", scene["needsChoice"][0]["state"])
 
 
 if __name__ == "__main__":

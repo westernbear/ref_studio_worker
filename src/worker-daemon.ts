@@ -35,6 +35,7 @@ type WorkerClaimedLog = Readonly<{
     | "worker.job.claimed"
     | "worker.job.completing"
     | "worker.job.completed"
+    | "worker.job.heartbeat_failed"
     | "worker.job.cancelling"
     | "worker.job.cancelled";
   workerId: string;
@@ -50,6 +51,63 @@ const wait = async (
     await delay(milliseconds, undefined, { signal });
   } catch (error) {
     if (!signal.aborted) throw error;
+  }
+};
+
+const runClaimedJob = async (
+  config: WorkerConfig,
+  api: WorkerDaemonApi,
+  signal: AbortSignal,
+  job: WorkerJob,
+  handleJob: WorkerJobHandler,
+): Promise<boolean> => {
+  const controller = new AbortController();
+  const abort = (): void => controller.abort(signal.reason);
+  signal.addEventListener("abort", abort, { once: true });
+  let stopped = false;
+  const heartbeat = async (): Promise<void> => {
+    while (!stopped && !controller.signal.aborted) {
+      await wait(config.heartbeatIntervalMs, controller.signal);
+      if (!stopped && !controller.signal.aborted) await api.heartbeat();
+    }
+  };
+  const heartbeatTask = heartbeat();
+  const handlerTask = handleJob(job, controller.signal);
+  try {
+    const outcome = await Promise.race([
+      handlerTask.then((result) => ({ kind: "result" as const, result })),
+      heartbeatTask.then(
+        () => ({ kind: "heartbeat-stopped" as const }),
+        (error: unknown) => ({ kind: "heartbeat-failed" as const, error }),
+      ),
+    ]);
+    if (outcome.kind === "heartbeat-failed") {
+      controller.abort(outcome.error);
+      await handlerTask.catch(() => undefined);
+      console.error(
+        JSON.stringify({
+          event: "worker.job.heartbeat_failed",
+          workerId: config.workerId,
+          jobId: job.jobId,
+          attemptId: job.attemptId,
+        } satisfies WorkerClaimedLog),
+      );
+      return false;
+    }
+    if (outcome.kind === "heartbeat-stopped") {
+      controller.abort();
+      await handlerTask.catch(() => undefined);
+      return false;
+    }
+    logWorkerJobInfo("worker.job.completing", config, job);
+    await api.complete(job.jobId, outcome.result);
+    logWorkerJobInfo("worker.job.completed", config, job);
+    return true;
+  } finally {
+    stopped = true;
+    controller.abort();
+    signal.removeEventListener("abort", abort);
+    await heartbeatTask.catch(() => undefined);
   }
 };
 
@@ -125,11 +183,9 @@ export async function runWorkerDaemon(
     if (job) {
       logWorkerJobInfo("worker.job.claimed", config, job);
       try {
-        const result = await handleJob(job, signal);
-        logWorkerJobInfo("worker.job.completing", config, job);
-        await api.complete(job.jobId, result);
-        logWorkerJobInfo("worker.job.completed", config, job);
+        if (!(await runClaimedJob(config, api, signal, job, handleJob))) break;
       } catch (error) {
+        if (signal.aborted) break;
         if (
           (error instanceof WorkerApiError &&
             error.code === "CANCEL_REQUESTED") ||

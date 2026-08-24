@@ -8,6 +8,7 @@ import type {
 } from "./capture/browser.js";
 import type { CommandRunner } from "./process-runner.js";
 import {
+  compileEvidenceScene,
   DELIVERY_FPS,
   DELIVERY_FRAME_COUNT,
   renderWorkflowDelivery,
@@ -29,7 +30,7 @@ const evidence = (frameCount: number): Record<string, unknown> => ({
     owners: [
       {
         ownerId: "residual",
-        kind: "residual-canvas",
+        kind: "global-residual",
         editable: true,
         assetRef: "background",
         confidence: 1,
@@ -154,6 +155,7 @@ describe("delivery contract", () => {
     };
 
     try {
+      const renderEvidence = evidence(100);
       const report = await renderWorkflowDelivery(
         {
           mode: "delivery",
@@ -163,7 +165,8 @@ describe("delivery contract", () => {
           workspace,
           normalizedPath: join(workspace, "normalized.mkv"),
           outputPath: join(workspace, "delivery.mp4"),
-          evidence: evidence(100),
+          evidence: renderEvidence,
+          expectedCompilation: compileEvidenceScene(renderEvidence, "ten_test"),
           frameCount: 100,
           sourceFps: 25,
           signal: new AbortController().signal,

@@ -7,6 +7,7 @@ import { CompilerOrchestrator } from "./compiler-orchestrator.js";
 import { normalizeMedia } from "./media-normalizer.js";
 import { runCommand, type CommandRunner } from "./process-runner.js";
 import {
+  compileEvidenceScene,
   DELIVERY_FRAME_COUNT,
   renderWorkflowDelivery,
   type RenderDeliveryInput,
@@ -21,33 +22,65 @@ const Fps = z.union([
   z.literal(50),
   z.literal(60),
 ]);
-const WorkflowPayload = z
+const Compilation = z
   .object({
-    tenantId: z.string().min(1),
-    uploadId: z.string().min(1),
-    startFrame: z.number().int().nonnegative(),
-    sourceFps: Fps,
-    frameCount: z.number().int().min(96).max(240),
-    phase: z.enum(["prepare", "render"]),
-    evidence: z.record(z.string(), z.unknown()).optional(),
-    evidenceDigest: z
-      .string()
-      .regex(/^[a-f0-9]{64}$/)
-      .optional(),
+    authoring: z
+      .object({ digest: z.string().regex(/^[a-f0-9]{64}$/u) })
+      .passthrough(),
+    scene: z
+      .object({ digest: z.string().regex(/^[a-f0-9]{64}$/u) })
+      .passthrough(),
+    browserPassSpec: z
+      .object({ digest: z.string().regex(/^[a-f0-9]{64}$/u) })
+      .passthrough(),
   })
-  .strict()
+  .strict();
+const CommonPayload = {
+  tenantId: z.string().min(1),
+  uploadId: z.string().min(1),
+  startFrame: z.number().int().nonnegative(),
+  sourceFps: Fps,
+  frameCount: z.number().int().min(96).max(240),
+  deletionEpoch: z.number().int().nonnegative(),
+  restoreEpoch: z.number().int().nonnegative(),
+} as const;
+const WorkflowPayload = z
+  .discriminatedUnion("phase", [
+    z.object({ ...CommonPayload, phase: z.literal("analyze") }).strict(),
+    z
+      .object({
+        ...CommonPayload,
+        phase: z.literal("compile"),
+        evidence: z.record(z.string(), z.unknown()),
+      })
+      .strict(),
+    z
+      .object({
+        ...CommonPayload,
+        phase: z.literal("preview"),
+        evidence: z.record(z.string(), z.unknown()),
+        evidenceDigest: z.string().regex(/^[a-f0-9]{64}$/u),
+        compilation: Compilation,
+        browserPassSpecDigest: z.string().regex(/^[a-f0-9]{64}$/u),
+      })
+      .strict(),
+    z
+      .object({
+        ...CommonPayload,
+        phase: z.literal("render"),
+        evidence: z.record(z.string(), z.unknown()),
+        evidenceDigest: z.string().regex(/^[a-f0-9]{64}$/u),
+        compilation: Compilation,
+        browserPassSpecDigest: z.string().regex(/^[a-f0-9]{64}$/u),
+      })
+      .strict(),
+  ])
   .superRefine((value, context) => {
     if (value.frameCount !== value.sourceFps * 4)
       context.addIssue({
         code: "custom",
         message: "frameCount must cover exactly four seconds",
         path: ["frameCount"],
-      });
-    if (value.phase === "render" && (!value.evidence || !value.evidenceDigest))
-      context.addIssue({
-        code: "custom",
-        message: "render evidence and digest are required",
-        path: ["evidence"],
       });
   });
 
@@ -59,6 +92,8 @@ type CompileEvidenceInput = Readonly<{
   normalizedPath: string;
   startMs: number;
   frameCount: number;
+  deletionEpoch: number;
+  restoreEpoch: number;
   signal: AbortSignal;
   onProgress: (stage: string, fraction: number) => Promise<void>;
 }>;
@@ -79,6 +114,7 @@ export type WorkflowPipelineDependencies = Readonly<{
     input: RenderDeliveryInput,
   ) => Promise<Record<string, unknown>>;
   workRoot?: string;
+  renderDeadlineMs?: number;
 }>;
 
 const defaultCompileEvidence = async (
@@ -116,10 +152,10 @@ const defaultCompileEvidence = async (
     },
     guards: {
       lease: () => !input.signal.aborted,
-      deletionEpoch: () => 0,
-      restoreEpoch: () => 0,
-      expectedDeletionEpoch: 0,
-      expectedRestoreEpoch: 0,
+      deletionEpoch: () => input.deletionEpoch,
+      restoreEpoch: () => input.restoreEpoch,
+      expectedDeletionEpoch: input.deletionEpoch,
+      expectedRestoreEpoch: input.restoreEpoch,
     },
     signal: input.signal,
     onProgress: (event) => {
@@ -165,7 +201,7 @@ export const createWorkflowJobHandler = (
       framesTotal: number | null = null,
     ): Promise<void> => {
       const update: WorkerProgress = {
-        phase: payload.phase,
+        phase: payload.phase === "render" ? "render" : "prepare",
         stage,
         fraction,
         framesProcessed,
@@ -182,6 +218,23 @@ export const createWorkflowJobHandler = (
       await dependencies.api.reportProgress(job.jobId, update, signal);
     };
     try {
+      if (payload.phase === "compile") {
+        await progress("scene-compile", 0.5);
+        const compilation = compileEvidenceScene(
+          payload.evidence,
+          payload.tenantId,
+        );
+        const evidenceDigest = createHash("sha256")
+          .update(JSON.stringify(payload.evidence))
+          .digest("hex");
+        await progress("scene-compile", 1);
+        return {
+          protocol: "rvs.worker.v1",
+          phase: "compile",
+          evidenceDigest,
+          compilation,
+        };
+      }
       await progress("download", 0.05);
       const source = await dependencies.api.downloadSource(job.jobId, signal);
       await writeFile(sourcePath, source, { mode: 0o600 });
@@ -210,7 +263,7 @@ export const createWorkflowJobHandler = (
         sourceFps: payload.sourceFps,
         signal,
       };
-      if (payload.phase === "prepare") {
+      if (payload.phase === "analyze") {
         await progress("compiler", 0.55);
         const compiled = await compile({
           tenantId: payload.tenantId,
@@ -220,41 +273,23 @@ export const createWorkflowJobHandler = (
           normalizedPath,
           startMs: 0,
           frameCount: payload.frameCount,
+          deletionEpoch: payload.deletionEpoch,
+          restoreEpoch: payload.restoreEpoch,
           signal,
           onProgress: (stage, fraction) =>
             progress(`compiler:${stage}`, 0.55 + fraction * 0.25),
         });
-        await progress("preview-render", 0.8, 0, DELIVERY_FRAME_COUNT);
-        await render({
-          ...renderContext,
-          mode: "preview",
-          evidence: compiled.evidence,
-          onProgress: (framesProcessed, framesTotal) =>
-            progress(
-              "preview-render",
-              0.8 + (framesProcessed / framesTotal) * 0.15,
-              framesProcessed,
-              framesTotal,
-            ),
-        });
-        await progress(
-          "preview-upload",
-          0.98,
-          DELIVERY_FRAME_COUNT,
-          DELIVERY_FRAME_COUNT,
-        );
-        const preview = await dependencies.api.uploadPreview(
-          job.jobId,
-          await readFile(outputPath),
-          signal,
+        const compilation = compileEvidenceScene(
+          compiled.evidence,
+          payload.tenantId,
         );
         await progress("evidence", 1, payload.frameCount, payload.frameCount);
         return {
           protocol: "rvs.worker.v1",
-          phase: "prepare",
+          phase: "analyze",
           evidence: compiled.evidence,
           evidenceDigest: compiled.evidenceDigest,
-          previewArtifactId: preview.artifactId,
+          compilation,
           normalized: {
             sha256: normalized.sha256,
             durationMs: normalized.durationMs,
@@ -263,42 +298,79 @@ export const createWorkflowJobHandler = (
           },
         };
       }
-      if (!payload.evidence) throw new Error("WORKER_EVIDENCE_MISSING");
       const evidenceDigest = createHash("sha256")
         .update(JSON.stringify(payload.evidence))
         .digest("hex");
       if (evidenceDigest !== payload.evidenceDigest)
         throw new Error("WORKER_EVIDENCE_DIGEST_MISMATCH");
+      if (
+        payload.browserPassSpecDigest !==
+        payload.compilation.browserPassSpec.digest
+      )
+        throw new Error("IR_VERSION_MISMATCH");
       await progress("scene-render", 0.4, 0, DELIVERY_FRAME_COUNT);
-      const report = await render({
-        ...renderContext,
-        mode: "delivery",
-        evidence: payload.evidence,
-        onProgress: (framesProcessed, framesTotal) =>
-          progress(
-            "scene-render",
-            0.4 + (framesProcessed / framesTotal) * 0.45,
-            framesProcessed,
-            framesTotal,
-          ),
-      });
-      await progress(
-        "upload",
-        0.95,
-        DELIVERY_FRAME_COUNT,
-        DELIVERY_FRAME_COUNT,
-      );
-      const artifact = await dependencies.api.uploadArtifact(
-        job.jobId,
-        await readFile(outputPath),
-        signal,
-      );
-      return {
-        protocol: "rvs.worker.v1",
-        phase: "render",
-        artifactId: artifact.artifactId,
-        report,
-      };
+      const mode = payload.phase === "preview" ? "preview" : "delivery";
+      const renderController = new AbortController();
+      const cancelRender = (): void => renderController.abort(signal.reason);
+      signal.addEventListener("abort", cancelRender, { once: true });
+      let renderTimedOut = false;
+      const renderTimer = setTimeout(() => {
+        renderTimedOut = true;
+        renderController.abort(new Error("RENDER_DEADLINE"));
+      }, dependencies.renderDeadlineMs ?? 900_000);
+      try {
+        const report = await render({
+          ...renderContext,
+          signal: renderController.signal,
+          mode,
+          evidence: payload.evidence,
+          expectedCompilation: payload.compilation,
+          onProgress: (framesProcessed, framesTotal) =>
+            progress(
+              "scene-render",
+              0.4 + (framesProcessed / framesTotal) * 0.45,
+              framesProcessed,
+              framesTotal,
+            ),
+        });
+        await progress(
+          mode === "preview" ? "preview-upload" : "upload",
+          0.95,
+          DELIVERY_FRAME_COUNT,
+          DELIVERY_FRAME_COUNT,
+        );
+        const bytes = await readFile(outputPath);
+        if (mode === "preview") {
+          const preview = await dependencies.api.uploadPreview(
+            job.jobId,
+            bytes,
+            renderController.signal,
+          );
+          return {
+            protocol: "rvs.worker.v1",
+            phase: "preview",
+            previewArtifactId: preview.artifactId,
+            report,
+          };
+        }
+        const artifact = await dependencies.api.uploadArtifact(
+          job.jobId,
+          bytes,
+          renderController.signal,
+        );
+        return {
+          protocol: "rvs.worker.v1",
+          phase: "render",
+          artifactId: artifact.artifactId,
+          report,
+        };
+      } catch (error) {
+        if (renderTimedOut) throw new Error("RENDER_DEADLINE");
+        throw error;
+      } finally {
+        clearTimeout(renderTimer);
+        signal.removeEventListener("abort", cancelRender);
+      }
     } finally {
       await rm(workspace, { recursive: true, force: true });
     }

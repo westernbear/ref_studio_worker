@@ -46,7 +46,7 @@ const evidence: EvidenceInput = {
   owners: [
     {
       ownerId: "title",
-      kind: "product-copy",
+      kind: "text-word",
       editable: true,
       assetRef: "font",
       confidence: 1,
@@ -54,7 +54,7 @@ const evidence: EvidenceInput = {
     },
     {
       ownerId: "residual",
-      kind: "residual-canvas",
+      kind: "global-residual",
       editable: true,
       assetRef: "background",
       confidence: 1,

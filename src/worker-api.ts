@@ -2,10 +2,16 @@ import { z } from "zod";
 import type { WorkerConfig } from "./worker-config.js";
 import type { WorkerPreflightReport } from "./worker-preflight.js";
 
-const RegisterResponse = z.object({ workerId: z.string().min(1) });
+const RegisterResponse = z.object({
+  workerId: z.string().min(1),
+  sessionToken: z.string().min(1),
+});
+const WorkerResponse = z.object({ workerId: z.string().min(1) });
 const Job = z.object({
   jobId: z.string().min(1),
   attemptId: z.string().min(1),
+  leaseToken: z.string().min(1),
+  leaseExpiresAt: z.iso.datetime(),
   payload: z.record(z.string(), z.unknown()).default({}),
 });
 const ClaimResponse = z.object({ job: Job.nullable() });
@@ -48,7 +54,7 @@ export type WorkerApi = Readonly<{
     signal: AbortSignal,
   ): Promise<ArtifactUpload>;
 }>;
-type Fetcher = (
+export type Fetcher = (
   input: URL | RequestInfo,
   init?: RequestInit,
 ) => Promise<Response>;
@@ -82,12 +88,16 @@ export function createWorkerApi(
   fetcher: Fetcher = fetch,
   preflight?: WorkerPreflightReport,
 ): WorkerApi {
+  let sessionToken: string | null = null;
+  const leases = new Map<string, string>();
   async function readResponse<T>(
     path: string,
     init: RequestInit,
     timeoutMs: number,
     signal: AbortSignal | undefined,
     read: (response: Response) => Promise<T>,
+    token: string,
+    leaseToken?: string,
   ): Promise<Readonly<{ response: Response; body: T }>> {
     const timeout = AbortSignal.timeout(timeoutMs);
     const requestSignal = signal ? AbortSignal.any([signal, timeout]) : timeout;
@@ -95,7 +105,8 @@ export function createWorkerApi(
       const response = await fetcher(`${config.apiBaseUrl}${path}`, {
         ...init,
         headers: {
-          authorization: `Bearer ${config.token}`,
+          authorization: `Bearer ${token}`,
+          ...(leaseToken ? { "X-Worker-Lease": leaseToken } : {}),
           ...init.headers,
         },
         signal: requestSignal,
@@ -167,7 +178,11 @@ export function createWorkerApi(
     body: unknown,
     schema: z.ZodType<T>,
     signal?: AbortSignal,
+    token = sessionToken,
+    leaseToken?: string,
   ): Promise<T> {
+    if (!token)
+      throw new WorkerApiError(path, null, "worker session is not registered");
     const result = await readResponse(
       path,
       {
@@ -178,10 +193,22 @@ export function createWorkerApi(
       config.apiRequestTimeoutMs,
       signal,
       (response) => response.text(),
+      token,
+      leaseToken,
     );
     return parseJson(path, result.response, result.body, schema);
   }
   const prefix = `/v1/workers/${encodeURIComponent(config.workerId)}`;
+  const leaseFor = (jobId: string): string => {
+    const lease = leases.get(jobId);
+    if (!lease)
+      throw new WorkerApiError(
+        `${prefix}/jobs/${encodeURIComponent(jobId)}`,
+        null,
+        "worker job lease is not available",
+      );
+    return lease;
+  };
   const upload = async (
     jobId: string,
     kind: "artifact" | "preview-artifact",
@@ -199,6 +226,8 @@ export function createWorkerApi(
       config.mediaRequestTimeoutMs,
       signal,
       (response) => response.text(),
+      sessionToken ?? "",
+      leaseFor(jobId),
     );
     return parseJson(
       path,
@@ -209,7 +238,7 @@ export function createWorkerApi(
   };
   return {
     register: async () => {
-      await post(
+      const registered = await post(
         "/v1/workers/register",
         {
           workerId: config.workerId,
@@ -217,36 +246,61 @@ export function createWorkerApi(
           preflight,
         },
         RegisterResponse,
+        undefined,
+        config.token,
       );
+      sessionToken = registered.sessionToken;
     },
     heartbeat: async () => {
       await post(
         `${prefix}/heartbeat`,
-        { capabilities: config.capabilities },
-        RegisterResponse,
+        {
+          capabilities: config.capabilities,
+          leases: [...leases].map(([jobId, leaseToken]) => ({
+            jobId,
+            leaseToken,
+          })),
+        },
+        WorkerResponse,
       );
     },
-    claim: async () => (await post(`${prefix}/claim`, {}, ClaimResponse)).job,
+    claim: async () => {
+      const job = (await post(`${prefix}/claim`, {}, ClaimResponse)).job;
+      if (job) leases.set(job.jobId, job.leaseToken);
+      return job;
+    },
     complete: async (jobId, result) => {
       await post(
         `${prefix}/jobs/${encodeURIComponent(jobId)}/complete`,
         { result },
         z.object({ ok: z.literal(true) }),
+        undefined,
+        sessionToken,
+        leaseFor(jobId),
       );
+      leases.delete(jobId);
     },
     fail: async (jobId, message) => {
       await post(
         `${prefix}/jobs/${encodeURIComponent(jobId)}/fail`,
         { message },
         OkResponse,
+        undefined,
+        sessionToken,
+        leaseFor(jobId),
       );
+      leases.delete(jobId);
     },
     acknowledgeCancellation: async (jobId) => {
       await post(
         `${prefix}/jobs/${encodeURIComponent(jobId)}/cancelled`,
         {},
         OkResponse,
+        undefined,
+        sessionToken,
+        leaseFor(jobId),
       );
+      leases.delete(jobId);
     },
     downloadSource: async (jobId, signal) => {
       const path = `${prefix}/jobs/${encodeURIComponent(jobId)}/source`;
@@ -256,6 +310,8 @@ export function createWorkerApi(
         config.mediaRequestTimeoutMs,
         signal,
         async (response) => new Uint8Array(await response.arrayBuffer()),
+        sessionToken ?? "",
+        leaseFor(jobId),
       );
       if (!result.response.ok)
         throw new WorkerApiError(
@@ -283,6 +339,8 @@ export function createWorkerApi(
         progress,
         OkResponse,
         signal,
+        sessionToken,
+        leaseFor(jobId),
       );
     },
     uploadArtifact: (jobId, bytes, signal) =>

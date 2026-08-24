@@ -41,6 +41,9 @@ const Probe = z.object({
       .passthrough(),
   ),
 });
+const FrameProbe = z.object({
+  streams: z.array(z.object({ nb_read_frames: z.string() }).passthrough()),
+});
 
 export type NormalizationRequest = Readonly<{
   inputPath: string;
@@ -77,25 +80,6 @@ const audioFilter = (channels: number): string => {
   if (channels === 1) return "pan=stereo|c0=1.0*c0|c1=1.0*c0";
   if (channels === 2) return "pan=stereo|c0=1.0*c0|c1=1.0*c1";
   return "pan=stereo|c0=1.0*FL+0.707*FC+0.707*BL+0.5*LFE|c1=1.0*FR+0.707*FC+0.707*BR+0.5*LFE";
-};
-
-const portraitCrop = (
-  width: number,
-  height: number,
-): readonly [number, number, number, number] => {
-  const sourceIsWider = width * 16 > height * 9;
-  const cropWidth = sourceIsWider
-    ? Math.floor((height * 9) / 16 / 2) * 2
-    : width;
-  const cropHeight = sourceIsWider
-    ? height
-    : Math.floor((width * 16) / 9 / 2) * 2;
-  return [
-    cropWidth,
-    cropHeight,
-    Math.floor((width - cropWidth) / 2),
-    Math.floor((height - cropHeight) / 2),
-  ];
 };
 
 export async function normalizeMedia(
@@ -152,11 +136,11 @@ export async function normalizeMedia(
     longSide > 3840 ||
     !width ||
     !height ||
-    shortSide < 360 ||
     shortSide > 2160 ||
     Number(video.start_time ?? 0) < 0 ||
+    !Number.isInteger(request.startFrame) ||
+    request.startFrame < 0 ||
     request.frameCount !== request.sourceFps * 4 ||
-    request.startFrame + request.frameCount > Math.floor(duration * fps) ||
     (audio?.channels ?? 0) > 8
   )
     throw new Error("MEDIA_CONTRACT_INVALID");
@@ -169,16 +153,14 @@ export async function normalizeMedia(
     transfer === undefined || transfer === "bt709"
       ? "colorspace=all=bt709:iall=bt709"
       : "colorspace=all=bt709:itrc=iec61966-2-1";
-  const [cropWidth, cropHeight, cropX, cropY] = portraitCrop(width, height);
   const videoFilters = [
     ...(rotation ? rotation.split(",") : []),
-    `crop=${cropWidth}:${cropHeight}:${cropX}:${cropY}`,
     `trim=start_frame=${request.startFrame}:end_frame=${request.startFrame + request.frameCount}`,
     "setpts=PTS-STARTPTS",
     color,
     `fps=${request.sourceFps}`,
   ].join(",");
-  const args = ["-nostdin", "-y", "-noautorotate", "-i", request.inputPath];
+  const args = ["-nostdin", "-noautorotate", "-i", request.inputPath];
   if (!audio) args.push("-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo");
   args.push(
     "-map",
@@ -205,6 +187,28 @@ export async function normalizeMedia(
     cwd: request.workspace,
     signal: request.signal,
   });
+  const frameProbeResult = await run(
+    process.env.RVS_FFPROBE_PATH ?? "ffprobe",
+    [
+      "-v",
+      "error",
+      "-count_frames",
+      "-select_streams",
+      "v:0",
+      "-show_entries",
+      "stream=nb_read_frames",
+      "-of",
+      "json",
+      request.outputPath,
+    ],
+    { cwd: request.workspace, signal: request.signal },
+  );
+  const frameProbe = FrameProbe.safeParse(JSON.parse(frameProbeResult.stdout));
+  if (
+    !frameProbe.success ||
+    Number(frameProbe.data.streams[0]?.nb_read_frames) !== request.frameCount
+  )
+    throw new Error("NORMALIZED_ARTIFACT_CORRUPT");
   const bytes = await readFile(request.outputPath);
   if (bytes.byteLength === 0) throw new Error("NORMALIZED_ARTIFACT_CORRUPT");
   return {

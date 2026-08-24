@@ -174,7 +174,8 @@ export function compileScene(
 ): Compilation {
   if (evidence.gate !== "APPROVED" && !(preview && evidence.gate === "PENDING"))
     fail("UNAPPROVED_GATE");
-  if ((evidence.needsChoice?.length ?? 0) > 0) fail("UNRESOLVED_CHOICE");
+  if (!preview && (evidence.needsChoice?.length ?? 0) > 0)
+    fail("UNRESOLVED_CHOICE");
   if (evidence.audio.sampleRateHz !== 48000 || evidence.audio.channels !== 2)
     fail("INVALID_AUDIO_RATE");
   const owners = new Map(
@@ -219,7 +220,7 @@ export function compileScene(
   if (
     !evidence.residualCanvas.mustRemainSeparate ||
     !owners.get(evidence.residualCanvas.owner) ||
-    owners.get(evidence.residualCanvas.owner)?.kind !== "residual-canvas"
+    owners.get(evidence.residualCanvas.owner)?.kind !== "global-residual"
   )
     fail("RESIDUAL_SEPARATION");
   for (const anchor of evidence.audio.anchors) {

@@ -11,6 +11,7 @@ import { runCommand, type CommandRunner } from "./process-runner.js";
 import { createRenderApp } from "./render-app/index.js";
 import {
   compileScene,
+  type Compilation,
   type EvidenceInput,
   type Json,
 } from "./scene/compile.js";
@@ -138,6 +139,19 @@ const SceneEvidence = z.object({
   }),
   sceneInput: EvidenceInputSchema,
 });
+const ExpectedCompilation = z
+  .object({
+    authoring: z
+      .object({ digest: z.string().regex(/^[a-f0-9]{64}$/u) })
+      .passthrough(),
+    scene: z
+      .object({ digest: z.string().regex(/^[a-f0-9]{64}$/u) })
+      .passthrough(),
+    browserPassSpec: z
+      .object({ digest: z.string().regex(/^[a-f0-9]{64}$/u) })
+      .passthrough(),
+  })
+  .strict();
 const Probe = z.object({
   format: z.object({ duration: z.string() }),
   streams: z.array(
@@ -187,6 +201,7 @@ export type RenderDeliveryInput = Readonly<{
   normalizedPath: string;
   outputPath: string;
   evidence: Record<string, unknown>;
+  expectedCompilation: unknown;
   frameCount: number;
   sourceFps: number;
   signal: AbortSignal;
@@ -216,7 +231,6 @@ const fraction = (value: string): number => {
 const parseEvidence = (
   evidence: Record<string, unknown>,
   tenantId: string,
-  mode: RenderDeliveryInput["mode"],
 ): {
   readonly sceneInput: EvidenceInput;
   readonly residualRgb16x9: readonly (readonly number[])[];
@@ -224,16 +238,32 @@ const parseEvidence = (
   const parsed = SceneEvidence.parse(evidence);
   if (parsed.sceneInput.tenantId !== tenantId)
     throw new Error("EVIDENCE_TENANT_MISMATCH");
-  const sceneInput: EvidenceInput = {
-    ...parsed.sceneInput,
-    gate: mode === "delivery" ? ("APPROVED" as const) : parsed.sceneInput.gate,
-  };
   return {
-    sceneInput,
+    sceneInput: parsed.sceneInput,
     residualRgb16x9: parsed.observed.effects.map(
       (effect) => effect.lowerLightRgb16x9,
     ),
   };
+};
+export const compileEvidenceScene = (
+  evidence: Record<string, unknown>,
+  tenantId: string,
+): Compilation =>
+  compileScene(parseEvidence(evidence, tenantId).sceneInput, true);
+const bindCompilation = (
+  evidence: Record<string, unknown>,
+  tenantId: string,
+  expected: unknown,
+): Compilation => {
+  const parsed = ExpectedCompilation.parse(expected);
+  const compilation = compileEvidenceScene(evidence, tenantId);
+  if (
+    compilation.authoring.digest !== parsed.authoring.digest ||
+    compilation.scene.digest !== parsed.scene.digest ||
+    compilation.browserPassSpec.digest !== parsed.browserPassSpec.digest
+  )
+    throw new Error("IR_VERSION_MISMATCH");
+  return compilation;
 };
 
 const validateDelivery = (raw: string): Record<string, Json> => {
@@ -299,8 +329,12 @@ export async function renderWorkflowDelivery(
     throw new Error("TEMPORAL_CONTRACT_INVALID");
   const command = dependencies.runCommand ?? runCommand;
   const capture = dependencies.captureFrames ?? captureBrowserFrames;
-  const parsed = parseEvidence(input.evidence, input.tenantId, input.mode);
-  const compilation = compileScene(parsed.sceneInput, input.mode === "preview");
+  const parsed = parseEvidence(input.evidence, input.tenantId);
+  const compilation = bindCompilation(
+    input.evidence,
+    input.tenantId,
+    input.expectedCompilation,
+  );
   const fontPath =
     dependencies.fontPath ??
     process.env.RVS_FONT_PATH ??

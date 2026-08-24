@@ -1,4 +1,5 @@
 import { randomUUID, createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import {
   mkdir,
   mkdtemp,
@@ -17,11 +18,14 @@ const MAX_FRAMES = 240;
 const INTERVAL_MS = 4_000;
 const MAX_RSS_GIB = 12;
 const DEFAULT_STAGE_CEILINGS = {
-  preflight: 30,
-  extract: 60,
-  measure: 180,
-  evidence: 1_800,
+  total: 1_800,
+  preflight: 120,
+  models: 300,
+  "all-frame-analysis": 1_500,
+  "audio-and-mapping": 300,
+  evidence: 120,
 } as const;
+type CompilerStage = Exclude<keyof typeof DEFAULT_STAGE_CEILINGS, "total">;
 
 const InputSchema = z.object({
   protocol: z.literal("rvs.compiler.v1"),
@@ -138,6 +142,19 @@ const within = (root: string, candidate: string): boolean => {
   const r = relative(resolve(root), resolve(candidate));
   return r === "" || (!r.startsWith("..") && !isAbsolute(r));
 };
+const processRssGib = (pid: number | undefined): number => {
+  if (pid === undefined) return 0;
+  try {
+    const match = readFileSync(`/proc/${pid}/status`, "utf8").match(
+      /^VmRSS:\s+(\d+)\s+kB$/mu,
+    );
+    return match ? Number(match[1]) / 1024 / 1024 : 0;
+  } catch {
+    return 0;
+  }
+};
+const compilerStage = (value: string): value is CompilerStage =>
+  value !== "total" && Object.hasOwn(DEFAULT_STAGE_CEILINGS, value);
 
 export class CompilerOrchestrator {
   static #active = false;
@@ -157,7 +174,7 @@ export class CompilerOrchestrator {
       stageCeilings: options.stageCeilings ?? DEFAULT_STAGE_CEILINGS,
       spawn: options.spawn ?? defaultSpawn,
       now: options.now ?? Date.now,
-      rssGib: options.rssGib ?? (() => 0),
+      rssGib: options.rssGib ?? processRssGib,
       networkAllowed: options.networkAllowed ?? false,
     };
   }
@@ -219,6 +236,29 @@ export class CompilerOrchestrator {
       let stdout = "";
       let stderr = "";
       let progressBuffer = "";
+      let stoppedFor: "COMPILER_DEADLINE" | "COMPILER_RSS_LIMIT" | null = null;
+      let activeStage: CompilerStage = "preflight";
+      let stageTimer: ReturnType<typeof setTimeout>;
+      const stopFor = (
+        reason: "COMPILER_DEADLINE" | "COMPILER_RSS_LIMIT",
+      ): void => {
+        if (stoppedFor !== null) return;
+        stoppedFor = reason;
+        child.kill("SIGTERM");
+      };
+      const startStage = (stage: CompilerStage): void => {
+        if (stage === activeStage) return;
+        activeStage = stage;
+        clearTimeout(stageTimer);
+        stageTimer = setTimeout(
+          () => stopFor("COMPILER_DEADLINE"),
+          this.#options.stageCeilings[stage] * 1000,
+        );
+      };
+      stageTimer = setTimeout(
+        () => stopFor("COMPILER_DEADLINE"),
+        this.#options.stageCeilings.preflight * 1000,
+      );
       child.stdout.on("data", (chunk: unknown) => {
         if (typeof chunk === "string" || Buffer.isBuffer(chunk))
           stdout += chunk.toString();
@@ -233,7 +273,11 @@ export class CompilerOrchestrator {
         for (const line of lines) {
           try {
             const progress = ProgressSchema.safeParse(JSON.parse(line));
-            if (progress.success) request.onProgress?.(progress.data);
+            if (progress.success) {
+              if (compilerStage(progress.data.stage))
+                startStage(progress.data.stage);
+              request.onProgress?.(progress.data);
+            }
           } catch {}
         }
       });
@@ -242,11 +286,14 @@ export class CompilerOrchestrator {
       };
       request.signal?.addEventListener("abort", abort, { once: true });
       const started = this.#options.now();
-      let timedOut = false;
-      const timer = setTimeout(() => {
-        timedOut = true;
-        child.kill("SIGTERM");
-      }, this.#options.stageCeilings.evidence * 1000);
+      const timer = setTimeout(
+        () => stopFor("COMPILER_DEADLINE"),
+        this.#options.stageCeilings.total * 1000,
+      );
+      const rssMonitor = setInterval(() => {
+        if (this.#options.rssGib(child.pid) > MAX_RSS_GIB)
+          stopFor("COMPILER_RSS_LIMIT");
+      }, 1_000);
       const result = await new Promise<{ code: number | null }>(
         (resolveResult) =>
           child.on("close", (code: unknown) =>
@@ -254,14 +301,16 @@ export class CompilerOrchestrator {
           ),
       );
       clearTimeout(timer);
+      clearTimeout(stageTimer);
+      clearInterval(rssMonitor);
       request.signal?.removeEventListener("abort", abort);
       if (request.signal?.aborted) throw safeError("COMPILER_CANCELLED");
-      if (timedOut) throw safeError("COMPILER_DEADLINE");
+      if (stoppedFor !== null) throw safeError(stoppedFor);
       if (this.#options.rssGib(child.pid) > MAX_RSS_GIB)
         throw safeError("COMPILER_RSS_LIMIT");
       if (
         this.#options.now() - started >
-        this.#options.stageCeilings.evidence * 1000
+        this.#options.stageCeilings.total * 1000
       )
         throw safeError("COMPILER_DEADLINE");
       if (result.code !== 0) {
@@ -289,6 +338,16 @@ export class CompilerOrchestrator {
         JSON.parse(stdout || (await readFile(outputPath, "utf8"))),
       );
       if (!parsed.success) throw safeError("COMPILER_PROTOCOL_INVALID");
+      if (parsed.data.rssGib > MAX_RSS_GIB)
+        throw safeError("COMPILER_RSS_LIMIT");
+      if (
+        parsed.data.stages.some(
+          (stage) =>
+            compilerStage(stage.name) &&
+            stage.seconds > this.#options.stageCeilings[stage.name],
+        )
+      )
+        throw safeError("COMPILER_DEADLINE");
       if (!within(workspace, outputPath))
         throw safeError("WORKSPACE_BOUNDARY_VIOLATION");
       if (

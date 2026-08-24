@@ -68,7 +68,7 @@ const base: EvidenceInput = {
   owners: [
     {
       ownerId: "title",
-      kind: "product-copy",
+      kind: "text-word",
       editable: true,
       assetRef: "font",
       confidence: 0.9,
@@ -76,7 +76,7 @@ const base: EvidenceInput = {
     },
     {
       ownerId: "residual",
-      kind: "residual-canvas",
+      kind: "global-residual",
       editable: true,
       assetRef: "background",
       confidence: 0.82,
@@ -255,7 +255,11 @@ describe("scene compiler", () => {
       expect(() => compileScene(input)).toThrow(token));
 
   it("compiles a pending scene only for preview", () => {
-    const pending = { ...base, gate: "PENDING" as const };
+    const pending = {
+      ...base,
+      gate: "PENDING" as const,
+      needsChoice: [{ choiceId: "choice_foreground_subject" }],
+    };
     expect(compileScene(pending, true).scene.schema).toBe("scene-ir-v1");
     expect(() => compileScene(pending)).toThrow("UNAPPROVED_GATE");
   });

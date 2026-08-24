@@ -1,5 +1,5 @@
 import { fileURLToPath } from "node:url";
-import { createWorkerApi } from "./worker-api.js";
+import { createWorkerApi, type Fetcher } from "./worker-api.js";
 import { runWorkerDaemon } from "./worker-daemon.js";
 import { parseWorkerConfig } from "./worker-config.js";
 import { createWorkflowJobHandler } from "./worker-job-handler.js";
@@ -10,8 +10,9 @@ import type { WorkerPreflightReport } from "./worker-preflight.js";
 export const createWorkerRuntime = (
   config: WorkerConfig,
   preflight?: WorkerPreflightReport,
+  fetcher: Fetcher = fetch,
 ) => {
-  const api = createWorkerApi(config, fetch, preflight);
+  const api = createWorkerApi(config, fetcher, preflight);
   return { api, handleJob: createWorkflowJobHandler({ api }) };
 };
 

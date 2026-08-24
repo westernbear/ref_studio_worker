@@ -8,13 +8,21 @@ import type { CommandRunner } from "./process-runner.js";
 describe("normalizeMedia", () => {
   afterEach(() => vi.unstubAllEnvs());
 
-  it("center-crops a landscape source to the 9:16 compiler canvas", async () => {
+  it("preserves landscape source dimensions for SceneIR fitting", async () => {
     const workspace = await mkdtemp(join(tmpdir(), "rvs-normalizer-"));
     const outputPath = join(workspace, "normalized.mkv");
     const calls: string[][] = [];
     const run: CommandRunner = async (command, args) => {
       calls.push([command, ...args]);
       if (command === "/opt/rvs/bin/ffprobe") {
+        if (args.includes("-count_frames"))
+          return {
+            code: 0,
+            stdout: JSON.stringify({
+              streams: [{ nb_read_frames: "120" }],
+            }),
+            stderr: "",
+          };
         return {
           code: 0,
           stdout: JSON.stringify({
@@ -73,8 +81,14 @@ describe("normalizeMedia", () => {
     expect(calls.map(([command]) => command)).toEqual([
       "/opt/rvs/bin/ffprobe",
       "/opt/rvs/bin/ffmpeg",
+      "/opt/rvs/bin/ffprobe",
     ]);
-    expect(filter).toContain("crop=488:870:550:0");
-    expect(calls[1]).toContain("+bitexact");
+    expect(calls[0]).not.toContain("-count_frames");
+    expect(calls[2]).toContain("-count_frames");
+    expect(calls[1]).toContain("-fflags");
+    expect(calls[1]?.[calls[1].indexOf("-fflags") + 1]).toBe("+bitexact");
+    expect(filter).not.toContain("scale=");
+    expect(filter).not.toContain("pad=");
+    expect(filter).not.toContain("crop=");
   });
 });

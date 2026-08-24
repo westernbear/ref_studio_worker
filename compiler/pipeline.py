@@ -255,20 +255,27 @@ def detect_surfaces(frame: np.ndarray, index: int) -> list[dict[str, Any]]:
 
 
 def camera_measure(
-    previous: np.ndarray | None, current: np.ndarray
+    previous: np.ndarray | None,
+    current: np.ndarray,
+    foreground_bounds: list[int] | None,
+    fps: int,
 ) -> dict[str, float]:
     empty = {
-        "tx": 0.0,
-        "ty": 0.0,
-        "rotation": 0.0,
-        "scale": 1.0,
-        "inlierRatio": 0.0,
+        "panXPxPerMs": 0.0,
+        "panYPxPerMs": 0.0,
+        "tiltDegPerMs": 0.0,
+        "zoomScalePerMs": 0.0,
+        "confidence": 0.0,
     }
     if previous is None:
-        return {**empty, "inlierRatio": 1.0}
+        return {**empty, "confidence": 1.0}
+    feature_mask = np.full(current.shape, 255, dtype=np.uint8)
+    if foreground_bounds is not None:
+        x, y, width, height = foreground_bounds
+        feature_mask[y : y + height, x : x + width] = 0
     orb = getattr(cv2, "ORB_create")(800)
-    before_points, before_descriptors = orb.detectAndCompute(previous, None)
-    after_points, after_descriptors = orb.detectAndCompute(current, None)
+    before_points, before_descriptors = orb.detectAndCompute(previous, feature_mask)
+    after_points, after_descriptors = orb.detectAndCompute(current, feature_mask)
     if before_descriptors is None or after_descriptors is None:
         return empty
     matches = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True).match(
@@ -288,12 +295,13 @@ def camera_measure(
         return empty
     scale = math.sqrt(float(matrix[0, 0]) ** 2 + float(matrix[1, 0]) ** 2)
     rotation = math.degrees(math.atan2(float(matrix[1, 0]), float(matrix[0, 0])))
+    frame_ms = 1_000 / fps
     return {
-        "tx": float(matrix[0, 2]),
-        "ty": float(matrix[1, 2]),
-        "rotation": rotation,
-        "scale": scale,
-        "inlierRatio": float(mask.mean()),
+        "panXPxPerMs": float(matrix[0, 2]) / frame_ms,
+        "panYPxPerMs": float(matrix[1, 2]) / frame_ms,
+        "tiltDegPerMs": rotation / frame_ms,
+        "zoomScalePerMs": (scale - 1) / frame_ms,
+        "confidence": float(mask.mean()),
     }
 
 
@@ -301,7 +309,7 @@ def matte_measure(
     models: dict[str, Any], frame: np.ndarray, recurrent: list[Any]
 ) -> tuple[dict[str, Any], list[Any]]:
     if not models:
-        return {"coverage": 0.0, "bounds": None}, recurrent
+        return {"coverage": 0.0, "bounds": None, "confidence": 0.0}, recurrent
     torch = models["torch"]
     rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     tensor = torch.from_numpy(rgb).permute(2, 0, 1).unsqueeze(0).float() / 255.0
@@ -314,10 +322,11 @@ def matte_measure(
     matte = alpha[0, 0].cpu().numpy()
     mask = matte >= 0.5
     if not mask.any():
-        return {"coverage": 0.0, "bounds": None}, next_recurrent
+        return {"coverage": 0.0, "bounds": None, "confidence": 1.0}, next_recurrent
     ys, xs = np.where(mask)
     return {
         "coverage": float(mask.mean()),
+        "confidence": float(matte[mask].mean()),
         "bounds": [
             int(xs.min()),
             int(ys.min()),
@@ -327,7 +336,7 @@ def matte_measure(
     }, next_recurrent
 
 
-def depth_measure(models: dict[str, Any], frame: np.ndarray) -> float | None:
+def depth_measure(models: dict[str, Any], frame: np.ndarray) -> np.ndarray | None:
     if not models:
         return None
     torch = models["torch"]
@@ -357,7 +366,42 @@ def depth_measure(models: dict[str, Any], frame: np.ndarray) -> float | None:
     values = prediction.cpu().numpy()
     low, high = np.percentile(values, [2, 98])
     normalized = np.clip((values - low) / max(high - low, 1e-6), 0, 1)
-    return float(np.median(normalized))
+    return normalized
+
+
+def region_median(
+    field: np.ndarray | None,
+    box: list[int] | None,
+    source_width: int,
+    source_height: int,
+) -> float | None:
+    if field is None or box is None:
+        return None
+    field_height, field_width = field.shape[:2]
+    x, y, width, height = box
+    x1 = int(np.clip(x * field_width / source_width, 0, field_width - 1))
+    y1 = int(np.clip(y * field_height / source_height, 0, field_height - 1))
+    x2 = int(np.clip((x + width) * field_width / source_width, x1 + 1, field_width))
+    y2 = int(np.clip((y + height) * field_height / source_height, y1 + 1, field_height))
+    return float(np.median(field[y1:y2, x1:x2]))
+
+
+def lower_light_grid(rgb: np.ndarray) -> list[float]:
+    height, width = rgb.shape[:2]
+    x_edges = np.linspace(0, width, 17, dtype=int)
+    y_edges = np.linspace(0, height, 10, dtype=int)
+    return [
+        float(value) / 255
+        for row in range(9)
+        for column in range(16)
+        for value in np.median(
+            rgb[
+                y_edges[row] : y_edges[row + 1],
+                x_edges[column] : x_edges[column + 1],
+            ],
+            axis=(0, 1),
+        )
+    ]
 
 
 def visual_measure(frame: np.ndarray) -> dict[str, Any]:
@@ -365,7 +409,6 @@ def visual_measure(frame: np.ndarray) -> dict[str, Any]:
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     luminance = gray.astype(np.float32) / 255.0
     cells = cv2.resize(luminance, (16, 9), interpolation=cv2.INTER_AREA)
-    rgb_cells = cv2.resize(rgb, (16, 9), interpolation=cv2.INTER_AREA)
     activity = float(cv2.Laplacian(gray, cv2.CV_32F).var())
     return {
         "meanRgb": [float(value) for value in rgb.reshape(-1, 3).mean(axis=0)],
@@ -374,7 +417,14 @@ def visual_measure(frame: np.ndarray) -> dict[str, Any]:
         "defocusSigma": float(1 / math.sqrt(max(activity, 1e-6))),
         "rim": float(cv2.Canny(gray, 80, 180).mean() / 255),
         "lowerLight16x9": [float(value) for value in cells.reshape(-1)],
-        "lowerLightRgb16x9": [float(value) / 255 for value in rgb_cells.reshape(-1)],
+        "lowerLightRgb16x9": lower_light_grid(rgb),
+        "confidence": 1.0,
+        "formulas": {
+            "bloom": "fraction(luma > 0.88)",
+            "defocus": "1/sqrt(var(laplacian))",
+            "rim": "mean(canny(80,180))/255",
+            "lowerLight": "median RGB per 16x9 cell",
+        },
     }
 
 
@@ -388,6 +438,7 @@ def owner_effect_measure(frame: np.ndarray, box: list[int]) -> dict[str, float]:
         "bloom": float(np.clip(measured["bloom"], 0, 1)),
         "defocus": float(np.clip(measured["defocusSigma"], 0, 1)),
         "rim": float(np.clip(measured["rim"], 0, 1)),
+        "confidence": 1.0,
     }
 
 
@@ -586,12 +637,193 @@ def lifecycle(samples: list[dict[str, Any]], frame_count: int) -> dict[str, Any]
 
 def map_bounds(sample: dict[str, Any]) -> dict[str, int]:
     box = sample["bounds"]
+    scale = min(1080 / sample["canvasWidth"], 1920 / sample["canvasHeight"])
+    offset_x = (1080 - sample["canvasWidth"] * scale) / 2
+    offset_y = (1920 - sample["canvasHeight"] * scale) / 2
     return {
         "frame": sample["frame"],
-        "x": round(box[0] * 1080 / sample["canvasWidth"]),
-        "y": round(box[1] * 1920 / sample["canvasHeight"]),
-        "width": round(box[2] * 1080 / sample["canvasWidth"]),
-        "height": round(box[3] * 1920 / sample["canvasHeight"]),
+        "x": round(offset_x + box[0] * scale),
+        "y": round(offset_y + box[1] * scale),
+        "width": round(box[2] * scale),
+        "height": round(box[3] * scale),
+    }
+
+
+def interpolate_track(
+    samples: list[dict[str, Any]], fps: int
+) -> list[dict[str, Any]]:
+    ordered = sorted(samples, key=lambda sample: sample["frame"])
+    if len(ordered) < 2:
+        return ordered
+    exact = {int(sample["frame"]): sample for sample in ordered}
+    result: list[dict[str, Any]] = []
+    for frame in range(int(ordered[0]["frame"]), int(ordered[-1]["frame"]) + 1):
+        if frame in exact:
+            result.append(exact[frame])
+            continue
+        left = max(
+            (sample for sample in ordered if int(sample["frame"]) < frame),
+            key=lambda sample: int(sample["frame"]),
+        )
+        right = min(
+            (sample for sample in ordered if int(sample["frame"]) > frame),
+            key=lambda sample: int(sample["frame"]),
+        )
+        span = int(right["frame"]) - int(left["frame"])
+        ratio = (frame - int(left["frame"])) / span
+
+        def blend(left_value: float, right_value: float) -> float:
+            return left_value + (right_value - left_value) * ratio
+
+        box = [
+            round(blend(float(left["bounds"][index]), float(right["bounds"][index])))
+            for index in range(4)
+        ]
+        effects = {
+            name: blend(
+                float(left["ownerEffects"][name]),
+                float(right["ownerEffects"][name]),
+            )
+            for name in ("bloom", "defocus", "rim")
+        }
+        result.append(
+            {
+                **left,
+                "frame": frame,
+                "bounds": box,
+                "confidence": min(
+                    float(left.get("confidence", 0)),
+                    float(right.get("confidence", 0)),
+                ),
+                "ownerEffects": {
+                    **effects,
+                    "confidence": min(
+                        float(left["ownerEffects"]["confidence"]),
+                        float(right["ownerEffects"]["confidence"]),
+                    ),
+                },
+                "depth": (
+                    None
+                    if left.get("depth") is None or right.get("depth") is None
+                    else blend(float(left["depth"]), float(right["depth"]))
+                ),
+                "interpolated": True,
+                "timeMs": round(frame * 1_000 / fps),
+            }
+        )
+    return result
+
+
+def tracking_measurements(
+    owner_id: str, samples: list[dict[str, Any]], fps: int
+) -> dict[str, Any]:
+    measured: list[dict[str, Any]] = []
+    previous_centroid: tuple[float, float] | None = None
+    frame_ms = 1_000 / fps
+    for sample in samples:
+        mapped = map_bounds(sample)
+        centroid = (
+            mapped["x"] + mapped["width"] / 2,
+            mapped["y"] + mapped["height"] / 2,
+        )
+        velocity = (
+            [0.0, 0.0]
+            if previous_centroid is None
+            else [
+                (centroid[0] - previous_centroid[0]) / frame_ms,
+                (centroid[1] - previous_centroid[1]) / frame_ms,
+            ]
+        )
+        measured.append(
+            {
+                "frame": sample["frame"],
+                "timeMs": round(int(sample["frame"]) * frame_ms),
+                "boundsPx": [
+                    mapped["x"],
+                    mapped["y"],
+                    mapped["width"],
+                    mapped["height"],
+                ],
+                "centroidPx": list(centroid),
+                "velocityPxPerMs": velocity,
+                "confidence": float(sample.get("confidence", 0)),
+                "depthNormalized": sample.get("depth"),
+            }
+        )
+        previous_centroid = centroid
+    return {"ownerId": owner_id, "samples": measured}
+
+
+def depth_overlap_choice(
+    tracks: list[tuple[str, list[dict[str, Any]]]],
+) -> dict[str, str] | None:
+    for left_index, (left_id, left_samples) in enumerate(tracks):
+        left_by_frame = {sample["frame"]: sample for sample in left_samples}
+        for right_id, right_samples in tracks[left_index + 1 :]:
+            for right in right_samples:
+                left = left_by_frame.get(right["frame"])
+                if (
+                    left is not None
+                    and left.get("depth") is not None
+                    and right.get("depth") is not None
+                    and box_iou(left["bounds"], right["bounds"]) > 0.05
+                    and abs(float(left["depth"]) - float(right["depth"])) < 0.05
+                ):
+                    return {
+                        "state": "NEEDS_CHOICE",
+                        "choiceId": "choice_depth_overlap_ownership",
+                        "reason": f"unclassified-depth-overlap:{left_id}:{right_id}",
+                    }
+    return None
+
+
+def rhythm_measurements(
+    visual: list[dict[str, Any]],
+    audio: list[dict[str, Any]],
+    fps: int,
+) -> dict[str, Any]:
+    activity = np.asarray([float(sample["activity"]) for sample in visual])
+    changes = np.abs(np.diff(activity, prepend=activity[0]))
+    visual_frames = set(int(index) for index in np.argsort(changes)[-min(5, len(changes)) :])
+    audio_frames = {int(anchor["frame"]) for anchor in audio}
+    beats = [
+        {
+            "frame": frame,
+            "timeMs": round(frame * 1_000 / fps),
+            "anchors": [
+                *( ["visual-change"] if frame in visual_frames else [] ),
+                *( ["audio-cue"] if frame in audio_frames else [] ),
+            ],
+            "confidence": float(
+                max(
+                    changes[frame] / max(float(changes.max()), 1e-6),
+                    next(
+                        (
+                            anchor["confidence"]
+                            for anchor in audio
+                            if int(anchor["frame"]) == frame
+                        ),
+                        0,
+                    ),
+                )
+            ),
+        }
+        for frame in sorted(visual_frames | audio_frames)
+    ]
+    intervals = np.diff([beat["timeMs"] for beat in beats])
+    tempo = (
+        None
+        if len(intervals) == 0 or float(np.median(intervals)) <= 0
+        else 60_000 / float(np.median(intervals))
+    )
+    return {
+        "beats": beats,
+        "tempoBpm": tempo,
+        "easing": {
+            "candidate": "linear" if float(np.std(changes)) < 1e-6 else "ease-in-out",
+            "source": "all-frame visual activity derivative",
+            "confidence": 1.0,
+        },
     }
 
 
@@ -603,17 +835,27 @@ def scene_input(
     surface_tracks: list[list[dict[str, Any]]],
     audio: list[dict[str, Any]],
     colors: list[str],
+    mattes: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
+    def effect_confidence(sample: dict[str, Any]) -> float:
+        return float(
+            sample["ownerEffects"].get("confidence", sample.get("confidence", 0))
+        )
+
     def effect_samples(samples: list[dict[str, Any]], name: str) -> list[dict[str, Any]]:
         return [
-            {"frame": sample["frame"], "value": sample["ownerEffects"][name]}
+            {
+                "frame": sample["frame"],
+                "value": sample["ownerEffects"][name],
+                "confidence": effect_confidence(sample),
+            }
             for sample in sorted(samples, key=lambda sample: sample["frame"])
         ]
 
     owners: list[dict[str, Any]] = [
         {
             "ownerId": "global-residual",
-            "kind": "residual-canvas",
+            "kind": "global-residual",
             "editable": True,
             "assetRef": "asset-global-residual",
             "confidence": 1.0,
@@ -666,6 +908,71 @@ def scene_input(
     }
     text_ids: list[str] = []
     surface_ids: list[str] = []
+    matte_frames = mattes or []
+    foreground_samples = [
+        {
+            **matte,
+            "canvasWidth": ANALYSIS_SIZE[0],
+            "canvasHeight": ANALYSIS_SIZE[1],
+        }
+        for matte in matte_frames
+        if matte["bounds"] is not None and 0.05 <= matte["coverage"] <= 0.75
+    ]
+    foreground_confidence = len(foreground_samples) / max(1, len(matte_frames))
+    needs_choice: list[dict[str, str]] = []
+    if foreground_confidence >= 0.5:
+        owner_id = "foreground-subject"
+        asset_id = "asset-foreground-subject"
+        owners.append(
+            {
+                "ownerId": owner_id,
+                "kind": "foreground-subject",
+                "editable": True,
+                "assetRef": asset_id,
+                "confidence": foreground_confidence,
+            }
+        )
+        assets.append(
+            {
+                "assetId": asset_id,
+                "kind": "measured-matte",
+                "editable": True,
+                "owner": owner_id,
+            }
+        )
+        geometry[owner_id] = {
+            "boundsPerFrame": [map_bounds(sample) for sample in foreground_samples],
+            "fixedWidth": False,
+            "fixedX": False,
+        }
+        tracks.append(
+            {
+                "trackId": "track-foreground-subject",
+                "owner": owner_id,
+                "lifecycle": lifecycle(foreground_samples, frame_count),
+                "geometryRef": owner_id,
+                "effects": [],
+            }
+        )
+    elif any(matte["coverage"] > 0 for matte in matte_frames):
+        needs_choice.append(
+            {
+                "state": "NEEDS_CHOICE",
+                "choiceId": "choice_foreground_subject_ownership",
+                "reason": "ambiguous-matte-evidence",
+            }
+        )
+    overlap_choice = depth_overlap_choice(
+        [
+            *[(f"text-{index:02d}", samples) for index, samples in enumerate(text_tracks)],
+            *[
+                (f"ui-surface-{index:02d}", samples)
+                for index, samples in enumerate(surface_tracks)
+            ],
+        ]
+    )
+    if not needs_choice and overlap_choice is not None:
+        needs_choice.append(overlap_choice)
     for index, samples in enumerate(text_tracks):
         owner_id = f"text-{index:02d}"
         asset_id = f"asset-{owner_id}"
@@ -674,7 +981,13 @@ def scene_input(
         owners.append(
             {
                 "ownerId": owner_id,
-                "kind": "product-copy",
+                "kind": (
+                    "subtitle"
+                    if float(representative["bounds"][1])
+                    + float(representative["bounds"][3]) / 2
+                    > float(representative["canvasHeight"]) * 0.7
+                    else "text-word"
+                ),
                 "editable": True,
                 "assetRef": asset_id,
                 "confidence": statistics.median(
@@ -711,10 +1024,14 @@ def scene_input(
         effects[owner_id] = {
             "bloom": {
                 "source": "native owner luminance profile",
+                "formula": "fraction(luma > 0.88)",
+                "confidence": min(effect_confidence(sample) for sample in samples),
                 "samples": effect_samples(samples, "bloom"),
             },
             "defocus": {
                 "source": "native owner Laplacian profile",
+                "formula": "1/sqrt(var(laplacian))",
+                "confidence": min(effect_confidence(sample) for sample in samples),
                 "samples": effect_samples(samples, "defocus"),
             },
         }
@@ -725,7 +1042,7 @@ def scene_input(
         owners.append(
             {
                 "ownerId": owner_id,
-                "kind": "product-ui",
+                "kind": "ui-surface",
                 "editable": True,
                 "assetRef": asset_id,
                 "confidence": min(float(sample["confidence"]) for sample in samples),
@@ -756,14 +1073,20 @@ def scene_input(
         effects[owner_id] = {
             "rim": {
                 "source": "native owner edge profile",
+                "formula": "mean(canny(80,180))/255",
+                "confidence": min(effect_confidence(sample) for sample in samples),
                 "samples": effect_samples(samples, "rim"),
             },
             "bloom": {
                 "source": "native owner luminance profile",
+                "formula": "fraction(luma > 0.88)",
+                "confidence": min(effect_confidence(sample) for sample in samples),
                 "samples": effect_samples(samples, "bloom"),
             },
             "defocus": {
                 "source": "native owner Laplacian profile",
+                "formula": "1/sqrt(var(laplacian))",
+                "confidence": min(effect_confidence(sample) for sample in samples),
                 "samples": effect_samples(samples, "defocus"),
             },
         }
@@ -831,6 +1154,17 @@ def scene_input(
                 "writes": "copy-layer",
             }
         )
+    if foreground_confidence >= 0.5:
+        passes.append(
+            {
+                "passId": "foreground-subject-dom",
+                "owner": "foreground-subject",
+                "kind": "DOM/SVG",
+                "shader": None,
+                "reads": ["measured matte bounds"],
+                "writes": "semantic-ui-layer",
+            }
+        )
     treatment_ids = [*text_ids, *surface_ids]
     if treatment_ids:
         passes.append(
@@ -880,7 +1214,7 @@ def scene_input(
         "reason": "measured reference evidence",
         "timestamp": "1970-01-01T00:00:00.000Z",
         "gate": "PENDING",
-        "needsChoice": [],
+        "needsChoice": needs_choice,
         "owners": owners,
         "editableAssets": assets,
         "geometry": geometry,
@@ -937,9 +1271,14 @@ def scene_input(
 
 def compile_bundle(
     request: dict[str, Any], artifact: Path, frame_count: int, fps: int
-) -> dict[str, Any]:
+) -> tuple[dict[str, Any], list[dict[str, float | str]]]:
+    stages: list[dict[str, float | str]] = []
     progress("models", 0.02)
+    stage_started = time.monotonic()
     models = load_models()
+    stages.append(
+        {"name": "models", "seconds": time.monotonic() - stage_started}
+    )
     capture = cv2.VideoCapture(str(artifact))
     ocr: list[dict[str, Any]] = []
     surfaces: list[dict[str, Any]] = []
@@ -952,6 +1291,8 @@ def compile_bundle(
     recurrent: list[Any] = [None, None, None, None]
     width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    progress("all-frame-analysis", 0.02)
+    stage_started = time.monotonic()
     for index in range(frame_count):
         ok, native = capture.read()
         if not ok:
@@ -961,24 +1302,40 @@ def compile_bundle(
         gray = cv2.cvtColor(analysis, cv2.COLOR_BGR2GRAY)
         frame_ocr = detect_ocr(models, native, analysis, index)
         frame_surfaces = detect_surfaces(native, index)
+        matte, recurrent = matte_measure(models, analysis, recurrent)
+        depth_field = depth_measure(models, analysis)
         for candidate in [*frame_ocr, *frame_surfaces]:
             candidate["canvasWidth"] = width
             candidate["canvasHeight"] = height
             candidate["ownerEffects"] = owner_effect_measure(
                 native, candidate["bounds"]
             )
+            candidate["depth"] = region_median(
+                depth_field, candidate["bounds"], width, height
+            )
         ocr.extend(frame_ocr)
         surfaces.extend(frame_surfaces)
-        camera.append(camera_measure(previous_gray, gray))
-        matte, recurrent = matte_measure(models, analysis, recurrent)
-        mattes.append(matte)
-        depths.append(depth_measure(models, analysis))
+        camera.append(camera_measure(previous_gray, gray, matte["bounds"], fps))
+        mattes.append(
+            {
+                "frame": index,
+                **matte,
+                "depth": region_median(
+                    depth_field,
+                    matte["bounds"],
+                    ANALYSIS_SIZE[0],
+                    ANALYSIS_SIZE[1],
+                ),
+            }
+        )
+        depths.append(None if depth_field is None else float(np.median(depth_field)))
         visual.append(visual_measure(analysis))
         frames.append(
             {
                 "index": index,
                 "timeMs": int(index * 1_000 / fps),
                 "nativeSha256": hashlib.sha256(native.tobytes()).hexdigest(),
+                "confidence": 1.0,
             }
         )
         previous_gray = gray
@@ -990,16 +1347,30 @@ def compile_bundle(
         capture.release()
         fail("NORMALIZED_ARTIFACT_CORRUPT")
     capture.release()
+    stages.append(
+        {"name": "all-frame-analysis", "seconds": time.monotonic() - stage_started}
+    )
+    progress("audio-and-mapping", 0.92)
+    stage_started = time.monotonic()
     audio = analyze_audio(
         artifact, Path(request["artifactPath"]).parent, fps, frame_count
     )
-    progress("audio-and-mapping", 0.95)
     colors = derive_palette(visual)
-    text_tracks = track_text(ocr)
-    surface_tracks = track_surfaces(surfaces)
-    return {
+    text_tracks = [interpolate_track(track, fps) for track in track_text(ocr)]
+    surface_tracks = [interpolate_track(track, fps) for track in track_surfaces(surfaces)]
+    scene = scene_input(
+        request,
+        frame_count,
+        fps,
+        text_tracks,
+        surface_tracks,
+        audio,
+        colors,
+        mattes,
+    )
+    bundle = {
         "schemaVersion": "rvs-reference-evidence-v1",
-        "state": "MAPPED",
+        "state": "NEEDS_CHOICE" if scene["needsChoice"] else "MAPPED",
         "source": {
             "jobId": request["jobId"],
             "attemptId": request["attemptId"],
@@ -1019,17 +1390,45 @@ def compile_bundle(
             "depth": {
                 "engine": "MiDaS v2.1 small",
                 "medianNormalized": depths,
+                "ownerSamples": [
+                    *[
+                        tracking_measurements(f"text-{index:02d}", samples, fps)
+                        for index, samples in enumerate(text_tracks)
+                    ],
+                    *[
+                        tracking_measurements(
+                            f"ui-surface-{index:02d}", samples, fps
+                        )
+                        for index, samples in enumerate(surface_tracks)
+                    ],
+                ],
             },
             "camera": {
-                "method": "RANSAC background homography",
+                "method": "foreground-masked RANSAC background homography",
                 "units": {
-                    "translation": "px/frame",
-                    "rotation": "deg/frame",
-                    "scale": "multiplicative/frame",
+                    "translation": "px/ms",
+                    "rotation": "deg/ms",
+                    "scale": "scale/ms",
+                },
+                "collisionThreshold": {
+                    "translationPxPerMs": 0.002,
+                    "rotationDegPerMs": 0.0005,
+                    "scalePerMs": 0.00001,
                 },
                 "frames": camera,
             },
+            "tracking": [
+                *[
+                    tracking_measurements(f"text-{index:02d}", samples, fps)
+                    for index, samples in enumerate(text_tracks)
+                ],
+                *[
+                    tracking_measurements(f"ui-surface-{index:02d}", samples, fps)
+                    for index, samples in enumerate(surface_tracks)
+                ],
+            ],
             "effects": visual,
+            "rhythm": rhythm_measurements(visual, audio, fps),
             "audio": {
                 "sampleRateHz": 48_000,
                 "channels": 2,
@@ -1042,17 +1441,13 @@ def compile_bundle(
             "uiOwnerCount": len(surface_tracks),
             "residualOwner": "global-residual",
         },
-        "needsChoice": [],
-        "sceneInput": scene_input(
-            request,
-            frame_count,
-            fps,
-            text_tracks,
-            surface_tracks,
-            audio,
-            colors,
-        ),
+        "needsChoice": scene["needsChoice"],
+        "sceneInput": scene,
     }
+    stages.append(
+        {"name": "audio-and-mapping", "seconds": time.monotonic() - stage_started}
+    )
+    return bundle, stages
 
 
 def main() -> int:
@@ -1064,17 +1459,15 @@ def main() -> int:
         artifact, frame_count, fps = verify_request(request)
         verify_models()
         progress("preflight", 0.01)
-        bundle = compile_bundle(request, artifact, frame_count, fps)
+        preflight_seconds = time.monotonic() - started
+        bundle, stages = compile_bundle(request, artifact, frame_count, fps)
         progress("evidence", 1.0)
         output = {
             "protocol": "rvs.compiler.v1",
             "kind": "evidence",
             "bundle": bundle,
             "stages": [
-                {
-                    "name": "all-frame-analysis",
-                    "seconds": time.monotonic() - started,
-                }
+                {"name": "preflight", "seconds": preflight_seconds}, *stages
             ],
             "rssGib": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024 / 1024,
         }
