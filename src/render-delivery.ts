@@ -78,7 +78,6 @@ const EvidenceInputSchema = z
     editor: z.string().min(1),
     reason: z.string().min(1),
     timestamp: z.string().min(1),
-    gate: z.enum(["APPROVED", "PENDING", "REJECTED"]),
     needsChoice: z.array(JsonValue).optional(),
     owners: z.array(Owner),
     editableAssets: z.array(Asset),

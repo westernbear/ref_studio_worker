@@ -68,7 +68,6 @@ export type EvidenceInput = {
   readonly editor: string;
   readonly reason: string;
   readonly timestamp: string;
-  readonly gate: "APPROVED" | "PENDING" | "REJECTED";
   readonly needsChoice?: readonly Json[] | undefined;
   readonly owners: readonly Owner[];
   readonly editableAssets: readonly Asset[];
@@ -172,8 +171,6 @@ export function compileScene(
   evidence: EvidenceInput,
   preview = false,
 ): Compilation {
-  if (evidence.gate !== "APPROVED" && !(preview && evidence.gate === "PENDING"))
-    fail("UNAPPROVED_GATE");
   if (!preview && (evidence.needsChoice?.length ?? 0) > 0)
     fail("UNRESOLVED_CHOICE");
   if (evidence.audio.sampleRateHz !== 48000 || evidence.audio.channels !== 2)

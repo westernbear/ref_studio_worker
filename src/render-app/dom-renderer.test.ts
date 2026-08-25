@@ -42,7 +42,6 @@ const evidence: EvidenceInput = {
   editor: "usr_editor",
   reason: "T25",
   timestamp: "2026-08-22T00:00:00.000Z",
-  gate: "APPROVED",
   owners: [
     {
       ownerId: "title",

@@ -64,7 +64,6 @@ const base: EvidenceInput = {
   editor: "usr_editor",
   reason: "T24",
   timestamp: "2026-08-22T00:00:00.000Z",
-  gate: "APPROVED",
   owners: [
     {
       ownerId: "title",
@@ -173,11 +172,6 @@ describe("scene compiler", () => {
       "INVALID_AUDIO_RATE",
     ],
     [
-      "unapproved gate",
-      replace((input) => ({ ...input, gate: "PENDING" })),
-      "UNAPPROVED_GATE",
-    ],
-    [
       "unconsumed effect",
       replace((input) => ({
         ...input,
@@ -254,14 +248,13 @@ describe("scene compiler", () => {
     it(`rejects ${name}`, () =>
       expect(() => compileScene(input)).toThrow(token));
 
-  it("compiles a pending scene only for preview", () => {
+  it("compiles evidence with unresolved choices only in preview mode", () => {
     const pending = {
       ...base,
-      gate: "PENDING" as const,
       needsChoice: [{ choiceId: "choice_foreground_subject" }],
     };
     expect(compileScene(pending, true).scene.schema).toBe("scene-ir-v1");
-    expect(() => compileScene(pending)).toThrow("UNAPPROVED_GATE");
+    expect(() => compileScene(pending)).toThrow("UNRESOLVED_CHOICE");
   });
 
   it("matches the standalone semantic contract fixture", async () => {

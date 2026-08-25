@@ -26,7 +26,6 @@ const evidence = (frameCount: number): Record<string, unknown> => ({
     editor: "usr_test",
     reason: "render contract",
     timestamp: "2026-08-23T00:00:00.000Z",
-    gate: "APPROVED",
     owners: [
       {
         ownerId: "residual",
