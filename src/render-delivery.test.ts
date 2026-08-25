@@ -231,4 +231,13 @@ describe("delivery contract", () => {
       await rm(workspace, { recursive: true, force: true });
     }
   });
+
+  it("tolerates a legacy gate field on already-persisted evidence", () => {
+    const legacyEvidence = evidence(4);
+    (legacyEvidence["sceneInput"] as Record<string, unknown>)["gate"] =
+      "APPROVED";
+    expect(() =>
+      compileEvidenceScene(legacyEvidence, "ten_test"),
+    ).not.toThrow();
+  });
 });

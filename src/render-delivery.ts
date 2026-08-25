@@ -79,6 +79,10 @@ const EvidenceInputSchema = z
     reason: z.string().min(1),
     timestamp: z.string().min(1),
     needsChoice: z.array(JsonValue).optional(),
+    // Legacy field from before the approval-gate removal. No longer read by
+    // compileScene, but pre-existing persisted evidence blobs may still
+    // carry it; accept and ignore it so old in-flight jobs keep validating.
+    gate: z.enum(["APPROVED", "PENDING", "REJECTED"]).optional(),
     owners: z.array(Owner),
     editableAssets: z.array(Asset),
     geometry: z.record(

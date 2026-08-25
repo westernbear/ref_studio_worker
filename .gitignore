@@ -8,3 +8,4 @@ dist/
 __pycache__/
 *.py[cod]
 compiler/.venv/
+.gstack/
