@@ -22,7 +22,7 @@ describe("buildEvidenceOverlayFilter", () => {
     ];
     const filter = buildEvidenceOverlayFilter(tracks, { fps: 30 });
     expect(filter).toContain("drawbox=x=10:y=20:w=100:h=200:color=yellow@0.8");
-    expect(filter).toContain("enable='between(t\\,0.000\\,0.033)'");
+    expect(filter).toContain("enable='eq(n\\,0)'");
     expect(filter).toContain("drawtext=text='foreground-subject'");
   });
 
@@ -50,21 +50,45 @@ describe("buildEvidenceOverlayFilter", () => {
     ];
     const filter = buildEvidenceOverlayFilter(tracks, { fps: 30 });
     expect(filter).toBe(
-      "drawbox=x=0:y=ih-12:w=iw:h=12:color=orange@0.7:thickness=fill:enable='between(t\\,1.000\\,1.033)'",
+      "drawbox=x=0:y=ih-12:w=iw:h=12:color=orange@0.7:thickness=fill:enable='eq(n\\,30)'",
     );
   });
 
-  it("escapes colons and quotes in drawtext labels", () => {
+  it("escapes apostrophes and percent signs in drawtext labels", () => {
+    // A bbox track, because that is the kind that actually draws text -- the
+    // ocr-text kind draws only a box, so asserting on it tested nothing.
     const tracks: EvidenceTrack[] = [
       {
         ownerId: "text-0",
-        kind: "ocr-text",
+        kind: "bbox",
         label: "50% off: today's sale",
         frames: [{ frame: 0, bounds: [0, 0, 10, 10], confidence: 0.5 }],
       },
     ];
     const filter = buildEvidenceOverlayFilter(tracks, { fps: 30 });
-    expect(filter).toContain("drawbox=x=0:y=0:w=10:h=10:color=lime@0.6:thickness=2");
+    // A bare apostrophe closes the option early and takes the whole graph
+    // down with it; a bare % is silently eaten by ffmpeg's text expander.
+    expect(filter).not.toMatch(/text='[^']*'[a-z]/u);
+    expect(filter).toContain("\\u0027");
+    expect(filter).toContain("50\\% off");
+  });
+
+  it("drops the densest tracks rather than building an unrenderable graph", () => {
+    const dense = (ownerId: string, frames: number): EvidenceTrack => ({
+      ownerId,
+      kind: "trajectory",
+      label: ownerId,
+      frames: Array.from({ length: frames }, (_unused, frame) => ({
+        frame,
+        point: [1, 1] as const,
+        confidence: 1,
+      })),
+    });
+    const filter = buildEvidenceOverlayFilter(
+      [dense("a", 5_000), dense("b", 10)],
+      { fps: 30 },
+    );
+    expect(filter.split("drawbox").length - 1).toBe(10);
   });
 });
 
