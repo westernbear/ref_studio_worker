@@ -100,8 +100,10 @@ export const renderEvidenceVideo = async (
       "-i",
       input.normalizedPath,
       ...filterArgs,
+      // normalizedPath is pcm_s16le in an mkv container; the mp4 muxer
+      // rejects raw PCM, so the audio must be transcoded, not copied.
       "-c:a",
-      "copy",
+      "aac",
       input.outputPath,
     ],
     { cwd: input.workspace, signal: input.signal },

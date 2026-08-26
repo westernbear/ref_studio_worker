@@ -109,7 +109,7 @@ describe("renderEvidenceVideo", () => {
     const filterContents = await readFile(filterPath, "utf8");
     expect(filterContents).toContain("drawbox=x=10:y=20:w=100:h=200:color=yellow@0.8");
     expect(calls[0]?.args).toContain(join(workspace, "evidence.mp4"));
-    expect(calls[0]?.args).toContain("copy");
+    expect(calls[0]?.args).toContain("aac");
   });
 
   it("omits -filter_script:v when there are no tracks", async () => {
