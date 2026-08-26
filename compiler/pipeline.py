@@ -1053,6 +1053,15 @@ def interpolate_track(
                     float(right.get("confidence", 0)),
                 ),
                 "ownerEffects": {
+                    # Everything measured about the owner carries over from the
+                    # frame it was measured on; only the numbers above blend.
+                    # Rebuilding this dict from the blend alone silently
+                    # dropped the colour palette, and once detection moved to
+                    # keyframes five samples in six were interpolated, so the
+                    # middle frame a track takes its colour from almost never
+                    # had one -- four of six surfaces reached the renderer with
+                    # no colour at all and were drawn in the fallback grey.
+                    **left["ownerEffects"],
                     **effects,
                     "confidence": min(
                         float(left["ownerEffects"]["confidence"]),

@@ -579,3 +579,46 @@ class SegmentedSurfaceTest(unittest.TestCase):
         self.assertEqual(
             [s["frame"] for s in filled], list(range(0, samples[-1]["frame"] + 1))
         )
+
+
+class InterpolatedAppearanceTest(unittest.TestCase):
+    def sample(self, frame: int, palette: list[str]) -> dict:
+        return {
+            "frame": frame,
+            "bounds": [10, 20, 100, 100],
+            "confidence": 0.9,
+            "ownerEffects": {
+                "bloom": 0.1,
+                "defocus": 0.1,
+                "rim": 0.1,
+                "confidence": 1.0,
+                "palette": palette,
+                "meanRgb": [10.0, 20.0, 30.0],
+            },
+        }
+
+    def test_a_filled_frame_keeps_the_colour_measured_beside_it(self) -> None:
+        from compiler.pipeline import interpolate_track
+
+        # Detection runs on keyframes, so most frames of a track are filled in.
+        # Rebuilding ownerEffects from the numeric blend alone dropped the
+        # palette, and the middle frame -- which is where a track takes its
+        # colour from -- is almost never a keyframe.
+        stops = ["#050303", "#0d0707", "#563031"]
+        filled = interpolate_track([self.sample(0, stops), self.sample(6, stops)], 30)
+        self.assertEqual([s["frame"] for s in filled], list(range(7)))
+        for s in filled:
+            self.assertEqual(
+                s["ownerEffects"].get("palette"), stops, f"frame {s['frame']}"
+            )
+            self.assertIsNotNone(s["ownerEffects"].get("meanRgb"))
+
+    def test_the_numbers_still_blend(self) -> None:
+        from compiler.pipeline import interpolate_track
+
+        left = self.sample(0, ["#000000"])
+        right = self.sample(4, ["#ffffff"])
+        right["ownerEffects"]["bloom"] = 0.5
+        filled = interpolate_track([left, right], 30)
+        middle = next(s for s in filled if s["frame"] == 2)
+        self.assertAlmostEqual(middle["ownerEffects"]["bloom"], 0.3, places=6)
