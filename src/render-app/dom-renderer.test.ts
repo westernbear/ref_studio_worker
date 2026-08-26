@@ -114,6 +114,7 @@ const input = (overrides: Partial<RenderInput> = {}): RenderInput => ({
   browserPassSpec: compilation.browserPassSpec,
   scene: compilation.scene,
   owners: evidence.owners,
+  assets: evidence.editableAssets,
   localFonts: [{ family: "Inter", path: "fonts/Inter.woff2" }],
   ...overrides,
 });
@@ -168,6 +169,31 @@ describe("semantic DOM/SVG renderer", () => {
     expect(rendered.markup).not.toContain("<image");
     expect(rendered.markup).toContain('<text data-owner-id="title"');
   });
+  it("paints owners with the measured palette instead of the stylesheet default", () => {
+    // Without a fill the capture page's near-black placeholder is the only
+    // colour available, so a correctly detected owner still renders invisible.
+    const markup = createRenderApp(
+      input({
+        assets: [
+          {
+            assetId: "font",
+            kind: "font",
+            editable: true,
+            owner: "title",
+            palette: ["#101014", "#5b3ea8", "#f2c14e"],
+          },
+          ...evidence.editableAssets.filter((asset) => asset.owner !== "title"),
+        ],
+      }),
+    ).renderFrame(0).markup;
+    // Light end for text, so it reads against the scene behind it.
+    expect(markup).toContain('fill="#f2c14e"');
+  });
+
+  it("omits fill when the compiler measured no palette", () => {
+    expect(createRenderApp(input()).renderFrame(0).markup).not.toContain("fill=");
+  });
+
   it("rejects unknown geometry references", () => {
     const badScene = {
       ...compilation.scene,

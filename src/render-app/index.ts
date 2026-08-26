@@ -1,4 +1,5 @@
 import type {
+  Asset,
   BrowserPassSpec,
   FrameBounds,
   Owner,
@@ -14,6 +15,10 @@ export type RenderInput = {
   readonly browserPassSpec: BrowserPassSpec;
   readonly scene: SceneIR;
   readonly owners: readonly Owner[];
+  // Carries the measured palette. Without it the only colour available is the
+  // capture page's near-black placeholder fill, so every owner renders as an
+  // invisible rectangle no matter how well it was detected.
+  readonly assets: readonly Asset[];
   readonly localFonts: readonly LocalFont[];
 };
 export type RenderedFrame = {
@@ -173,11 +178,32 @@ const orderedTracks = (input: RenderInput): readonly Track[] => {
     .map(({ track }) => track);
 };
 
+const HEX = /^#[0-9a-f]{6}$/iu;
+// The compiler measures a dark-to-light ramp per owner. Take the light end for
+// text (it has to read against the scene) and the middle for a surface (its
+// body colour). Anything unmeasured stays null so the stylesheet still wins.
+const palette = (
+  asset: Asset,
+): Readonly<{ body: string | null; ink: string | null }> => {
+  const stops = asset["palette"];
+  const hex = Array.isArray(stops)
+    ? stops.filter((stop): stop is string => typeof stop === "string" && HEX.test(stop))
+    : [];
+  if (hex.length === 0) return { body: null, ink: null };
+  return {
+    body: hex[Math.floor(hex.length / 2)] ?? null,
+    ink: hex[hex.length - 1] ?? null,
+  };
+};
+
 export function createRenderApp(input: RenderInput): {
   readonly renderFrame: (frame: number) => RenderedFrame;
 } {
   validateInput(input);
   const ownerMap = new Map(input.owners.map((owner) => [owner.ownerId, owner]));
+  const paletteMap = new Map(
+    input.assets.map((asset) => [asset.owner, palette(asset)]),
+  );
   const tracks = orderedTracks(input);
   const renderFrame = (frame: number): RenderedFrame => {
     if (!Number.isInteger(frame) || frame < 0)
@@ -199,7 +225,10 @@ export function createRenderApp(input: RenderInput): {
         defocus: effectAt(ownerEffects?.["defocus"], frame),
         rim: effectAt(ownerEffects?.["rim"], frame),
       };
-      const attributes = `data-owner-id="${escapeXml(owner.ownerId)}" data-editable="${owner.editable}" data-bloom="${effects.bloom}" data-defocus="${effects.defocus}" data-rim="${effects.rim}" x="${bounds.x}" y="${bounds.y}" width="${bounds.width}" height="${bounds.height}"`;
+      const colors = paletteMap.get(owner.ownerId);
+      const measuredFill = tag === "text" ? colors?.ink : colors?.body;
+      const fill = measuredFill ? ` fill="${escapeXml(measuredFill)}"` : "";
+      const attributes = `data-owner-id="${escapeXml(owner.ownerId)}" data-editable="${owner.editable}" data-bloom="${effects.bloom}" data-defocus="${effects.defocus}" data-rim="${effects.rim}"${fill} x="${bounds.x}" y="${bounds.y}" width="${bounds.width}" height="${bounds.height}"`;
       markupNodes.push(
         tag === "text"
           ? `<text ${attributes} font-size="${Math.max(8, Math.round(bounds.height * 0.92))}" textLength="${bounds.width}" lengthAdjust="spacingAndGlyphs">${escapeXml(content ?? "")}</text>`

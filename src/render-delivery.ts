@@ -352,6 +352,7 @@ export async function renderWorkflowDelivery(
     browserPassSpec: compilation.browserPassSpec,
     scene: compilation.scene,
     owners: compilation.authoring.owners,
+    assets: compilation.authoring.editableAssets,
     localFonts: [{ family: "Wanted Sans", path: fontPath }],
   });
   if (parsed.residualRgb16x9.length !== input.frameCount)

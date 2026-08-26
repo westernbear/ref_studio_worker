@@ -219,8 +219,14 @@ const renderPage = (
     #scene { z-index: 1; }
     #owner-effects { z-index: 2; pointer-events: none; }
     #scene svg { width: 1080px; height: 1920px; overflow: hidden; }
-    #scene text { fill: #fff; font-family: RvsLocal, sans-serif; font-weight: 700; dominant-baseline: hanging; }
-    #scene rect { fill: rgba(17, 17, 20, .82); stroke: rgba(255, 255, 255, .32); stroke-width: 3; rx: 28; }
+    /* :where() keeps these at their original specificity, so the
+       global-residual rule below still wins, while a measured fill="" from
+       the renderer is no longer overridden by the stylesheet -- a CSS fill
+       beats an SVG presentation attribute. */
+    #scene text { font-family: RvsLocal, sans-serif; font-weight: 700; dominant-baseline: hanging; }
+    #scene text:where(:not([fill])) { fill: #fff; }
+    #scene rect { stroke: rgba(255, 255, 255, .32); stroke-width: 3; rx: 28; }
+    #scene rect:where(:not([fill])) { fill: rgba(17, 17, 20, .82); }
     #scene [data-owner-id="global-residual"] { fill: transparent; stroke: none; }
   </style>
 </head>

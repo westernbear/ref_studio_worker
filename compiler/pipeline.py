@@ -501,16 +501,38 @@ def visual_measure(frame: np.ndarray) -> dict[str, Any]:
     }
 
 
-def owner_effect_measure(frame: np.ndarray, box: list[int]) -> dict[str, float]:
+def owner_appearance(crop: np.ndarray) -> dict[str, Any]:
+    """What the owner actually looks like: a dark-to-light colour ramp.
+
+    Without this the IR describes where an owner is and how it glows but never
+    what colour it is, so the renderer can only fall back to its stylesheet's
+    near-black placeholder fill -- a perfectly located, perfectly invisible
+    rectangle.
+    """
+    rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB).reshape(-1, 3).astype(np.float32)
+    stops = [np.percentile(rgb, percentile, axis=0) for percentile in (20, 60, 92)]
+    return {
+        "palette": [
+            "#" + "".join(f"{int(np.clip(value, 0, 255)):02x}" for value in stop)
+            for stop in stops
+        ],
+        "meanRgb": [float(value) for value in rgb.mean(axis=0)],
+    }
+
+
+def owner_effect_measure(frame: np.ndarray, box: list[int]) -> dict[str, Any]:
     x, y, width, height = box
     crop = frame[y : y + height, x : x + width]
     if crop.size == 0:
         fail("OWNER_MEASUREMENT_FAILED")
     measured = visual_measure(crop)
+    appearance = owner_appearance(crop)
     return {
         "bloom": float(np.clip(measured["bloom"], 0, 1)),
         "defocus": float(np.clip(measured["defocusSigma"], 0, 1)),
         "rim": float(np.clip(measured["rim"], 0, 1)),
+        "palette": appearance["palette"],
+        "meanRgb": appearance["meanRgb"],
         "confidence": 1.0,
     }
 
@@ -930,6 +952,18 @@ def scene_input(
     colors: list[str],
     mattes: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
+    def track_appearance(samples: list[dict[str, Any]]) -> dict[str, Any]:
+        """Colour for the whole track, taken from its middle frame.
+
+        One representative frame beats averaging across the track: a fade
+        would average toward the background and hand the renderer a colour
+        the owner never actually is.
+        """
+        ordered = sorted(samples, key=lambda sample: sample["frame"])
+        effects = ordered[len(ordered) // 2]["ownerEffects"]
+        palette = effects.get("palette")
+        return {"palette": palette} if palette else {}
+
     def effect_confidence(sample: dict[str, Any]) -> float:
         return float(
             sample["ownerEffects"].get("confidence", sample.get("confidence", 0))
@@ -1096,6 +1130,7 @@ def scene_input(
                 "kind": "measured-text",
                 "editable": True,
                 "owner": owner_id,
+                **track_appearance(samples),
             }
         )
         geometry[owner_id] = {
@@ -1148,6 +1183,7 @@ def scene_input(
                 "kind": "semantic-ui-surface",
                 "editable": True,
                 "owner": owner_id,
+                **track_appearance(samples),
             }
         )
         geometry[owner_id] = {
