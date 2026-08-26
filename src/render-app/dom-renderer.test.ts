@@ -194,6 +194,33 @@ describe("semantic DOM/SVG renderer", () => {
     expect(createRenderApp(input()).renderFrame(0).markup).not.toContain("fill=");
   });
 
+  it("strokes a surface with its own lit edge, not the stylesheet's white", () => {
+    // A card is dark in the middle and lit at its rim -- measured across the
+    // reference, the outer band runs two to three times brighter than the
+    // centre and carries the warm colour the card reads by. Sending the light
+    // stop to text only left every card outlined in the fixed white the
+    // capture page falls back to, which is the flat grey rectangle a reviewer
+    // sees instead of a glowing one.
+    const markup = createRenderApp(
+      input({
+        assets: [
+          {
+            assetId: "card",
+            kind: "measured-ui-surface",
+            editable: true,
+            owner: "residual",
+            palette: ["#050303", "#0d0707", "#563031"],
+          },
+          ...evidence.editableAssets.filter(
+            (asset) => asset.owner !== "residual",
+          ),
+        ],
+      }),
+    ).renderFrame(0).markup;
+    expect(markup).toContain('stroke="#563031"');
+    expect(markup).toContain('fill="#0d0707"');
+  });
+
   it("rejects unknown geometry references", () => {
     const badScene = {
       ...compilation.scene,

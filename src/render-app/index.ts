@@ -182,17 +182,23 @@ const HEX = /^#[0-9a-f]{6}$/iu;
 // The compiler measures a dark-to-light ramp per owner. Take the light end for
 // text (it has to read against the scene) and the middle for a surface (its
 // body colour). Anything unmeasured stays null so the stylesheet still wins.
+// The stops run dark to light. A card's body really is the middle one -- these
+// surfaces are dark and lit from their own edge -- and the lightest stop is
+// that edge: measured across the reference, the outer band of a card sits two
+// to three times brighter than its centre and carries the warm colour the card
+// reads by. Sending the lightest stop to `ink` alone meant it only ever reached
+// text, and every card was stroked with the stylesheet's fixed white instead.
 const palette = (
   asset: Asset,
-): Readonly<{ body: string | null; ink: string | null }> => {
+): Readonly<{ body: string | null; edge: string | null }> => {
   const stops = asset["palette"];
   const hex = Array.isArray(stops)
     ? stops.filter((stop): stop is string => typeof stop === "string" && HEX.test(stop))
     : [];
-  if (hex.length === 0) return { body: null, ink: null };
+  if (hex.length === 0) return { body: null, edge: null };
   return {
     body: hex[Math.floor(hex.length / 2)] ?? null,
-    ink: hex[hex.length - 1] ?? null,
+    edge: hex[hex.length - 1] ?? null,
   };
 };
 
@@ -226,9 +232,13 @@ export function createRenderApp(input: RenderInput): {
         rim: effectAt(ownerEffects?.["rim"], frame),
       };
       const colors = paletteMap.get(owner.ownerId);
-      const measuredFill = tag === "text" ? colors?.ink : colors?.body;
+      const measuredFill = tag === "text" ? colors?.edge : colors?.body;
       const fill = measuredFill ? ` fill="${escapeXml(measuredFill)}"` : "";
-      const attributes = `data-owner-id="${escapeXml(owner.ownerId)}" data-editable="${owner.editable}" data-bloom="${effects.bloom}" data-defocus="${effects.defocus}" data-rim="${effects.rim}"${fill} x="${bounds.x}" y="${bounds.y}" width="${bounds.width}" height="${bounds.height}"`;
+      const stroke =
+        tag === "rect" && colors?.edge
+          ? ` stroke="${escapeXml(colors.edge)}"`
+          : "";
+      const attributes = `data-owner-id="${escapeXml(owner.ownerId)}" data-editable="${owner.editable}" data-bloom="${effects.bloom}" data-defocus="${effects.defocus}" data-rim="${effects.rim}"${fill}${stroke} x="${bounds.x}" y="${bounds.y}" width="${bounds.width}" height="${bounds.height}"`;
       markupNodes.push(
         tag === "text"
           ? `<text ${attributes} font-size="${Math.max(8, Math.round(bounds.height * 0.92))}" textLength="${bounds.width}" lengthAdjust="spacingAndGlyphs">${escapeXml(content ?? "")}</text>`

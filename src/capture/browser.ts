@@ -225,7 +225,8 @@ const renderPage = (
        beats an SVG presentation attribute. */
     #scene text { font-family: RvsLocal, sans-serif; font-weight: 700; dominant-baseline: hanging; }
     #scene text:where(:not([fill])) { fill: #fff; }
-    #scene rect { stroke: rgba(255, 255, 255, .32); stroke-width: 3; rx: 28; }
+    #scene rect { stroke-width: 3; rx: 28; }
+    #scene rect:where(:not([stroke])) { stroke: rgba(255, 255, 255, .32); }
     #scene rect:where(:not([fill])) { fill: rgba(17, 17, 20, .82); }
     #scene [data-owner-id="global-residual"] { fill: transparent; stroke: none; }
   </style>
