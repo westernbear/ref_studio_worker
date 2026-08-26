@@ -29,6 +29,13 @@ const enableAtFrame = (frame: number): string => `enable='eq(n\\,${frame})'`;
 // deadline. Hence the budget below; raising it means measuring again.
 const MAX_OVERLAY_CLAUSES = 4_000;
 
+// A name sits above its box. Clamping to 0 when the box already touches the
+// top edge -- which the content-window box always does on a pillarboxed source
+// -- stacks every such name on the same row, so they overprint each other.
+// Drop inside the box instead; the effect caption at y+4 stays clear either
+// way, since the two placements never both land in the same band.
+const nameLabelY = (y: number): number => (y >= 24 ? y - 24 : y + 26);
+
 export const buildEvidenceOverlayFilter = (
   tracks: readonly EvidenceTrack[],
   _options: Readonly<{ fps: number }> = { fps: 30 },
@@ -66,7 +73,7 @@ export const buildEvidenceOverlayFilter = (
           `drawbox=x=${x}:y=${y}:w=${w}:h=${h}:color=${color}@0.8:thickness=3:${enable}`,
         );
         clauses.push(
-          `drawtext=text='${escapeDrawtext(track.label)}':x=${x}:y=${Math.max(0, y - 24)}:fontsize=20:fontcolor=${color}:box=1:boxcolor=black@0.5:${enable}`,
+          `drawtext=text='${escapeDrawtext(track.label)}':x=${x}:y=${nameLabelY(y)}:fontsize=20:fontcolor=${color}:box=1:boxcolor=black@0.5:${enable}`,
         );
       } else if (track.kind === "trajectory" && point.point) {
         const [x, y] = point.point;
@@ -81,7 +88,7 @@ export const buildEvidenceOverlayFilter = (
       } else if (track.kind === "effect" && point.bounds) {
         const [x, y] = point.bounds;
         clauses.push(
-          `drawtext=text='${escapeDrawtext(track.label)}':x=${x}:y=${y}:fontsize=16:fontcolor=${color}:${enable}`,
+          `drawtext=text='${escapeDrawtext(track.label)}':x=${x}:y=${y + 4}:fontsize=16:fontcolor=${color}:${enable}`,
         );
       } else if (track.kind === "audio-anchor") {
         clauses.push(

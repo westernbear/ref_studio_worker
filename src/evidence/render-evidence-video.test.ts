@@ -158,3 +158,38 @@ describe("renderEvidenceVideo", () => {
     expect(calls[0]).not.toContain("-filter_script:v");
   });
 });
+
+describe("label placement", () => {
+  it("drops a name inside its box when the box touches the top edge", () => {
+    const filter = buildEvidenceOverlayFilter([
+      {
+        trackId: "t-top",
+        kind: "bbox",
+        label: "global-residual",
+        frames: [{ frame: 0, bounds: [532, 0, 516, 870] }],
+      },
+      {
+        trackId: "t-near",
+        kind: "bbox",
+        label: "ui-surface-05",
+        frames: [{ frame: 0, bounds: [557, 5, 211, 159] }],
+      },
+    ]);
+    // Neither name may land on y=0 -- that is where they used to collide.
+    expect(filter).toContain("text='global-residual':x=532:y=26");
+    expect(filter).toContain("text='ui-surface-05':x=557:y=31");
+    expect(filter).not.toContain(":y=0:fontsize=20");
+  });
+
+  it("keeps a name above its box when there is room", () => {
+    const filter = buildEvidenceOverlayFilter([
+      {
+        trackId: "t-mid",
+        kind: "bbox",
+        label: "ui-surface-04",
+        frames: [{ frame: 0, bounds: [835, 140, 170, 175] }],
+      },
+    ]);
+    expect(filter).toContain("text='ui-surface-04':x=835:y=116");
+  });
+});
