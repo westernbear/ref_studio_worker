@@ -451,6 +451,15 @@ def region_median(
 
 
 def lower_light_grid(rgb: np.ndarray) -> list[float]:
+    """Low-frequency light field, one RGB triple per 16x9 cell.
+
+    The mean, not the median: a cell is ~1/144 of the frame, so a glow that
+    covers part of one is exactly the signal this field exists to carry, and
+    the median throws it away by picking the dark majority. The renderer
+    writes this straight out as the opaque base layer, so a median here is
+    what made the reconstruction of a dark, glow-lit reference come out flat
+    black. visual_measure's sibling grid already averages (INTER_AREA).
+    """
     height, width = rgb.shape[:2]
     x_edges = np.linspace(0, width, 17, dtype=int)
     y_edges = np.linspace(0, height, 10, dtype=int)
@@ -458,7 +467,7 @@ def lower_light_grid(rgb: np.ndarray) -> list[float]:
         float(value) / 255
         for row in range(9)
         for column in range(16)
-        for value in np.median(
+        for value in np.mean(
             rgb[
                 y_edges[row] : y_edges[row + 1],
                 x_edges[column] : x_edges[column + 1],
@@ -487,7 +496,7 @@ def visual_measure(frame: np.ndarray) -> dict[str, Any]:
             "bloom": "fraction(luma > 0.88)",
             "defocus": "1/sqrt(var(laplacian))",
             "rim": "mean(canny(80,180))/255",
-            "lowerLight": "median RGB per 16x9 cell",
+            "lowerLight": "mean RGB per 16x9 cell",
         },
     }
 

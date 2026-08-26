@@ -300,6 +300,16 @@ export function createRenderPlan(
   };
 }
 
+// Measured owner effects are coverage fractions, not intensities: bloom is
+// fraction(luma > 0.88) and rim is mean(canny)/255, so a clearly glowing card
+// measures around 0.04. Multiplied straight into alpha that is a 1-3% no-op,
+// which is why every glow pass rendered invisibly. Map the measured range onto
+// 0..1 here, in the renderer, and leave the IR holding the honest measurement
+// its `formulas` provenance describes.
+const INTENSITY_GLSL = `float intensity(float measured) {
+  return pow(clamp(measured / 0.15, 0.0, 1.0), 0.5);
+}`;
+
 export const shaderSources = {
   "dynamic-nonuniform-rim": `#version 300 es
 precision highp float;
@@ -308,6 +318,7 @@ uniform int ownerCount;
 uniform vec4 ownerBounds[32];
 uniform vec4 ownerEffects[32];
 uniform float framePhase;
+${INTENSITY_GLSL}
 void main() {
   vec2 point = vec2(gl_FragCoord.x, 1920.0 - gl_FragCoord.y);
   float alpha = 0.0;
@@ -317,7 +328,7 @@ void main() {
     vec2 delta = abs(point - (bounds.xy + bounds.zw * 0.5)) - bounds.zw * 0.5;
     float edge = abs(length(max(delta, 0.0)) + min(max(delta.x, delta.y), 0.0));
     float profile = 0.72 + 0.28 * sin(point.x * 0.021 + point.y * 0.013 + framePhase * 0.11 + float(index));
-    alpha += exp(-edge * edge / 18.0) * ownerEffects[index].z * profile * 0.7;
+    alpha += exp(-edge * edge / 18.0) * intensity(ownerEffects[index].z) * profile * 0.7;
   }
   outColor = vec4(0.72, 0.9, 1.0, clamp(alpha, 0.0, 0.8));
 }`,
@@ -328,6 +339,7 @@ uniform int ownerCount;
 uniform vec4 ownerBounds[32];
 uniform vec4 ownerEffects[32];
 uniform float framePhase;
+${INTENSITY_GLSL}
 void main() {
   vec2 point = vec2(gl_FragCoord.x, 1920.0 - gl_FragCoord.y);
   float bloomAlpha = 0.0;
@@ -340,7 +352,7 @@ void main() {
     float pulse = 0.92 + 0.08 * sin(framePhase * 0.09 + float(index));
     float bloomRadius = 18.0 + ownerEffects[index].x * 18.0;
     float defocusRadius = 8.0 + ownerEffects[index].y * 42.0;
-    bloomAlpha += exp(-(outside * outside) / (2.0 * bloomRadius * bloomRadius)) * ownerEffects[index].x * pulse * 0.36;
+    bloomAlpha += exp(-(outside * outside) / (2.0 * bloomRadius * bloomRadius)) * intensity(ownerEffects[index].x) * pulse * 0.36;
     defocusAlpha += exp(-(outside * outside) / (2.0 * defocusRadius * defocusRadius)) * ownerEffects[index].y * 0.2;
   }
   float alpha = clamp(bloomAlpha + defocusAlpha, 0.0, 0.65);
