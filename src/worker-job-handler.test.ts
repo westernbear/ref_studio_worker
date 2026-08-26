@@ -320,6 +320,25 @@ describe("workflow job handler", () => {
     expect(fixture.api.uploadArtifact).not.toHaveBeenCalled();
   });
 
+  it("strips the worker-local safetySampleFramePath from the preview report", async () => {
+    const fixture = dependencies();
+    const renderDelivery: WorkflowPipelineDependencies["renderDelivery"] =
+      vi.fn(async ({ outputPath, mode }) => {
+        await writeFile(outputPath, "rendered-mp4");
+        return { status: "PASS", mode, safetySampleFramePath: null };
+      });
+    const handler = createWorkflowJobHandler({
+      ...fixture.dependencies,
+      renderDelivery,
+    });
+
+    const result = (await handler(
+      job("preview"),
+      new AbortController().signal,
+    )) as { report: Record<string, unknown> };
+    expect(result.report).not.toHaveProperty("safetySampleFramePath");
+  });
+
   it("renders the approved IR into the private delivery slot", async () => {
     const fixture = dependencies();
     const handler = createWorkflowJobHandler(fixture.dependencies);

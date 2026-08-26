@@ -397,21 +397,22 @@ export const createWorkflowJobHandler = (
             sizeBytes: artifact.sizeBytes,
           }),
         );
+        // safetySampleFramePath is a local worker-filesystem path, meaningful
+        // only for the upload below -- strip it before the report is sent to
+        // the API, whose RenderReport schema is .strict() (both preview and
+        // delivery reports extend it, so both must drop this key).
+        const { safetySampleFramePath, ...outgoingReport } = report as Record<
+          string,
+          unknown
+        > & { safetySampleFramePath?: unknown };
         if (mode === "preview") {
           return {
             protocol: "rvs.worker.v1",
             phase: "preview",
             previewArtifactId: artifact.artifactId,
-            report,
+            report: outgoingReport,
           };
         }
-        // safetySampleFramePath is a local worker-filesystem path, meaningful
-        // only for the upload below -- strip it before the report is sent to
-        // the API, whose RenderReport schema is .strict().
-        const { safetySampleFramePath, ...outgoingReport } = report as Record<
-          string,
-          unknown
-        > & { safetySampleFramePath?: unknown };
         const safetySample =
           typeof safetySampleFramePath === "string"
             ? await dependencies.api.uploadSafetySample(
