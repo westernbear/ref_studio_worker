@@ -1521,6 +1521,17 @@ def compile_bundle(
             "normalizedSha256": sha256(artifact),
         },
         "observed": {
+            # Where the analysed content sits inside the normalized frame.
+            # Every geometry in sceneInput is expressed in render-canvas
+            # coordinates derived from this window, so anything that draws
+            # those geometries back onto the reference video -- the evidence
+            # overlay -- needs the window to invert the mapping.
+            "contentWindow": {
+                "x": crop_x,
+                "y": crop_y,
+                "width": width,
+                "height": height,
+            },
             "temporalVolume": {
                 "profile": "540x960",
                 "fps": fps,

@@ -45,6 +45,65 @@ const readFrameBounds = (value: unknown): FrameBounds | null => {
     return null;
   return { frame, x, y, width, height };
 };
+// The reference clip may be letterboxed, and the compiler analyses only the
+// content inside it. sceneInput geometry is therefore expressed in
+// render-canvas coordinates (1080x1920) derived from that window, while
+// observed.ocr bounds stay in analysis pixels relative to the window's
+// origin. The evidence overlay draws onto the untouched reference video, so
+// both have to come back to that video's own pixels first -- without this
+// every box lands somewhere else, most visibly out in the black bars.
+const CANVAS_WIDTH = 1080;
+const CANVAS_HEIGHT = 1920;
+
+type ContentWindow = Readonly<{
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}>;
+
+const readContentWindow = (
+  bundle: Record<string, unknown>,
+): ContentWindow | null => {
+  const observed = bundle["observed"];
+  const window = isRecord(observed) ? observed["contentWindow"] : null;
+  if (!isRecord(window)) return null;
+  const { x, y, width, height } = window;
+  if (!isNumber(x) || !isNumber(y) || !isNumber(width) || !isNumber(height))
+    return null;
+  if (width <= 0 || height <= 0) return null;
+  return { x, y, width, height };
+};
+
+const canvasToFrame = (
+  bounds: FrameBounds,
+  window: ContentWindow | null,
+): FrameBounds => {
+  if (!window) return bounds;
+  const scale = Math.min(
+    CANVAS_WIDTH / window.width,
+    CANVAS_HEIGHT / window.height,
+  );
+  if (!(scale > 0)) return bounds;
+  const offsetX = (CANVAS_WIDTH - window.width * scale) / 2;
+  const offsetY = (CANVAS_HEIGHT - window.height * scale) / 2;
+  return {
+    frame: bounds.frame,
+    x: Math.round(window.x + (bounds.x - offsetX) / scale),
+    y: Math.round(window.y + (bounds.y - offsetY) / scale),
+    width: Math.max(1, Math.round(bounds.width / scale)),
+    height: Math.max(1, Math.round(bounds.height / scale)),
+  };
+};
+
+const analysisToFrame = (
+  bounds: FrameBounds,
+  window: ContentWindow | null,
+): FrameBounds =>
+  window
+    ? { ...bounds, x: bounds.x + window.x, y: bounds.y + window.y }
+    : bounds;
+
 const readGeometryTrack = (
   bundle: Record<string, unknown>,
   geometryRef: string,
@@ -54,9 +113,11 @@ const readGeometryTrack = (
   const entry = isRecord(geometry) ? geometry[geometryRef] : null;
   const boundsPerFrame = isRecord(entry) ? entry["boundsPerFrame"] : null;
   if (!Array.isArray(boundsPerFrame)) return [];
+  const window = readContentWindow(bundle);
   return boundsPerFrame
     .map(readFrameBounds)
-    .filter((item): item is FrameBounds => item !== null);
+    .filter((item): item is FrameBounds => item !== null)
+    .map((item) => canvasToFrame(item, window));
 };
 
 // ponytail: owner confidence is read once per track (not per frame) --
@@ -156,6 +217,7 @@ const ocrTextTracks = (bundle: Record<string, unknown>): EvidenceTrack[] => {
   const ocr = isRecord(observed) ? observed["ocr"] : null;
   const candidates = isRecord(ocr) ? ocr["candidates"] : null;
   if (!Array.isArray(candidates)) return [];
+  const window = readContentWindow(bundle);
   const byText = new Map<string, EvidenceTrackFrame[]>();
   for (const candidate of candidates) {
     if (!isRecord(candidate)) continue;
@@ -167,10 +229,11 @@ const ocrTextTracks = (bundle: Record<string, unknown>): EvidenceTrack[] => {
     );
     if (!isNumber(frame) || !isNumber(confidence) || !isString(text) || !box)
       continue;
+    const placed = analysisToFrame(box, window);
     const frames = byText.get(text) ?? [];
     frames.push({
       frame,
-      bounds: [box.x, box.y, box.width, box.height],
+      bounds: [placed.x, placed.y, placed.width, placed.height],
       confidence,
     });
     byText.set(text, frames);
