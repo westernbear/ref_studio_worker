@@ -181,6 +181,28 @@ describe("label placement", () => {
     expect(filter).not.toContain(":y=0:fontsize=20");
   });
 
+  it("keeps a box that starts above the frame from stacking on one below", () => {
+    // Inverting the letterbox fit puts the content-window box's top at about
+    // -24 on a pillarboxed source. Measuring room above from -24 put its name
+    // two pixels from the top edge, where the first card's name already sat.
+    const filter = buildEvidenceOverlayFilter([
+      {
+        trackId: "t-window",
+        kind: "bbox",
+        label: "global-residual",
+        frames: [{ frame: 0, bounds: [532, -24, 516, 918] }],
+      },
+      {
+        trackId: "t-card",
+        kind: "bbox",
+        label: "ui-surface-01",
+        frames: [{ frame: 0, bounds: [557, 25, 212, 228] }],
+      },
+    ]);
+    expect(filter).toContain("text='global-residual':x=532:y=26");
+    expect(filter).toContain("text='ui-surface-01':x=557:y=1");
+  });
+
   it("keeps a name above its box when there is room", () => {
     const filter = buildEvidenceOverlayFilter([
       {

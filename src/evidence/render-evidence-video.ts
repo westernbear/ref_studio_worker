@@ -29,12 +29,16 @@ const enableAtFrame = (frame: number): string => `enable='eq(n\\,${frame})'`;
 // deadline. Hence the budget below; raising it means measuring again.
 const MAX_OVERLAY_CLAUSES = 4_000;
 
-// A name sits above its box. Clamping to 0 when the box already touches the
-// top edge -- which the content-window box always does on a pillarboxed source
-// -- stacks every such name on the same row, so they overprint each other.
-// Drop inside the box instead; the effect caption at y+4 stays clear either
-// way, since the two placements never both land in the same band.
-const nameLabelY = (y: number): number => (y >= 24 ? y - 24 : y + 26);
+// A name sits above its box, and drops inside it when there is no room above.
+// Both decisions are about the frame, not the box: the content-window box
+// begins *above* the frame on a pillarboxed source -- inverting the letterbox
+// fit puts its top near -24 -- so measuring room from the box's own y put its
+// name back within a couple of pixels of the top edge, where a card's name
+// already was. Measure from where the box actually starts being visible.
+const nameLabelY = (y: number): number => {
+  const visibleTop = Math.max(0, y);
+  return visibleTop >= 24 ? visibleTop - 24 : visibleTop + 26;
+};
 
 export const buildEvidenceOverlayFilter = (
   tracks: readonly EvidenceTrack[],
