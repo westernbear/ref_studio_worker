@@ -86,7 +86,11 @@ export const renderEvidenceVideo = async (
   if (filter.length > 0) {
     const filterPath = join(input.workspace, "evidence-overlay-filter.txt");
     await writeFile(filterPath, filter, "utf8");
-    filterArgs.push("-/filter:v", filterPath);
+    // -filter_script:v (not the newer -/filter:v) -- production runs
+    // ffmpeg 5.1.9, which predates the -/filter generic file-read syntax.
+    // -filter_script:v has worked since ffmpeg 2.x and still works on 8.x
+    // (deprecated but functional), so it's the compatible choice here.
+    filterArgs.push("-filter_script:v", filterPath);
   }
   await command(
     process.env.RVS_FFMPEG_PATH ?? "ffmpeg",
