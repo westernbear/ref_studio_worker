@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import collections
 import contextlib
 import difflib
 import hashlib
@@ -17,6 +18,7 @@ from typing import Any, NoReturn
 
 import cv2
 import numpy as np
+from scipy.optimize import linear_sum_assignment
 
 ADMITTED_FPS = {24, 25, 30, 50, 60}
 ANALYSIS_SIZE = (540, 960)
@@ -154,11 +156,20 @@ def load_models() -> dict[str, Any]:
             download_enabled=False,
             verbose=False,
         )
+        sys.path.insert(0, str(vendor / "mobilesam"))
+        from mobile_sam import SamAutomaticMaskGenerator, sam_model_registry
+
+        sam = sam_model_registry["vit_t"](checkpoint=str(model_dir / "mobile_sam.pt"))
+        sam.eval()
+        segmenter = SamAutomaticMaskGenerator(
+            sam, points_per_side=SEGMENTER_POINTS_PER_SIDE
+        )
     return {
         "torch": torch,
         "rvm": rvm,
         "midas": midas,
         "ocr": ocr,
+        "segmenter": segmenter,
     }
 
 
@@ -289,33 +300,139 @@ def content_window(artifact: Path, frame_count: int) -> tuple[int, int, int, int
     return x0, y0, crop_width, crop_height
 
 
-def detect_surfaces(frame: np.ndarray, index: int) -> list[dict[str, Any]]:
+# An icon's outline and the glow inside it are nested, not adjacent: their IoU
+# is low, so an IoU test lets both through and both become owners painted on
+# the same icon. Containment catches what IoU cannot.
+SURFACE_CONTAINMENT_LIMIT = 0.7
+# How many surfaces a frame holds is a property of the frame, so these do not
+# decide it. They were four and six, which on a scene of nine cards returned
+# four; the size gates and the containment rule choose what is a surface, and
+# on that scene the choosing alone now returns all nine, each tracked end to
+# end. They could not be lifted before the tracker was fixed -- lifting them
+# turned six tracks into thirty-nine, because the same icon kept being
+# re-acquired as a new owner -- and with association repaired that same clip
+# settles at thirteen. Nothing downstream bounds owner count, so these are only
+# a stop against a pathological source, set far above any plausible interface.
+SURFACES_PER_FRAME = 64
+SURFACE_TRACKS = 64
+# How far a surface may travel between frames and still be the same surface,
+# in units of its own size. Not a new figure: the text tracker in this file has
+# always admitted a word within 1.25 of its own extent, and a card is no more
+# free to jump than a word is.
+SURFACE_MATCH_REACH = 1.25
+# And how alike it must still look. Also not a new figure: this is the overlap
+# the tracker has always demanded, now asked of shape alone so that motion
+# stops being able to answer it.
+SURFACE_SHAPE_AGREEMENT = 0.25
+SURFACE_TRACK_GAP = 12
+# Segmentation runs on a fraction of the frames and the tracker carries the
+# surfaces across the rest, so the stride can never exceed the gap the tracker
+# will bridge. Measured on the production image at four threads: one segmented
+# keyframe costs about nine seconds at this grid, so ten of them add a minute
+# and a half to a stage that already takes thirteen, while segmenting all one
+# hundred and twenty would take an hour against a thirty-minute deadline.
+SEGMENTER_POINTS_PER_SIDE = 8
+# Half the gap, not all of it, so a surface the segmenter misses on one
+# keyframe is still within reach on the next and its track survives.
+SEGMENTER_STRIDE = SURFACE_TRACK_GAP // 2
+SEGMENTER_INPUT_HEIGHT = 480
+
+
+def segment_surfaces(
+    models: dict[str, Any], frame: np.ndarray, index: int
+) -> list[dict[str, Any]]:
+    """Find the surfaces in one frame by segmenting it.
+
+    Edges and size gates cannot answer what a surface is on this material.
+    Measured on a reference frame holding six icons: contours split a card
+    tilted in space into three horizontal bands, because no upright box fits a
+    rotated card, and raised a sixth box on a glow highlight the same size as a
+    real card -- so no size threshold can separate them. Depth, which this
+    pipeline already measures, keeps a tilted card whole and ignores highlights
+    entirely, but its card boundaries are ramps rather than steps, and reading
+    them back needs a threshold that truncates the cards it does find. Segments
+    have no such boundary problem: the same frame yields all six cards whole,
+    tilted one included, and the glyphs it also finds inside them are nested,
+    which the containment rule already removes.
+    """
     height, width = frame.shape[:2]
-    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    edges = cv2.Canny(gray, 60, 160)
-    contours, _ = cv2.findContours(edges, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
-    surfaces: list[dict[str, Any]] = []
-    for contour in contours:
-        x, y, box_width, box_height = cv2.boundingRect(contour)
-        area = box_width * box_height
-        if area < width * height * 0.025 or area > width * height * 0.88:
-            continue
-        if box_width < width * 0.18 or box_height < height * 0.06:
-            continue
-        surfaces.append(
+    scale = SEGMENTER_INPUT_HEIGHT / height
+    small = cv2.resize(
+        frame,
+        (max(1, round(width * scale)), SEGMENTER_INPUT_HEIGHT),
+        interpolation=cv2.INTER_AREA,
+    )
+    masks = models["segmenter"].generate(cv2.cvtColor(small, cv2.COLOR_BGR2RGB))
+    found: list[dict[str, Any]] = []
+    for mask in sorted(masks, key=lambda item: -item["area"]):
+        x, y, mask_width, mask_height = mask["bbox"]
+        found.append(
             {
                 "frame": index,
-                "bounds": [x, y, box_width, box_height],
-                "confidence": 0.6,
+                "bounds": [
+                    round(x / scale),
+                    round(y / scale),
+                    round(mask_width / scale),
+                    round(mask_height / scale),
+                ],
+                "confidence": float(np.clip(mask.get("predicted_iou", 0.9), 0, 1)),
             }
         )
-    surfaces.sort(key=lambda item: item["bounds"][2] * item["bounds"][3], reverse=True)
-    selected: list[dict[str, Any]] = []
-    for surface in surfaces:
-        if any(box_iou(surface["bounds"], item["bounds"]) >= 0.72 for item in selected):
+    return admit_surfaces(found, width, height)
+
+
+def admit_surfaces(
+    found: list[dict[str, Any]], width: int, height: int
+) -> list[dict[str, Any]]:
+    """Keep the candidates that are surfaces and drop the ones already counted.
+
+    Both size gates measure against the short side, so the same card has to be
+    the same number of pixels to survive whether the frame is portrait or
+    landscape. Measuring width against the frame's width made orientation
+    decide the answer: rotating a frame of identical content and identical
+    pixel count turned four detected cards into none, because a landscape frame
+    demanded a card two thirds wider than a portrait one did. The fractions
+    themselves are inherited and not independently justified.
+    """
+    short = min(width, height)
+    kept: list[dict[str, Any]] = []
+    for candidate in sorted(
+        found, key=lambda item: -(item["bounds"][2] * item["bounds"][3])
+    ):
+        box = candidate["bounds"]
+        area = box[2] * box[3]
+        if area < width * height * 0.025 or area > width * height * 0.88:
             continue
-        selected.append(surface)
-    return selected[:4]
+        if box[2] < short * 0.18 or box[3] < short * 0.06:
+            continue
+        if any(
+            box_iou(box, item["bounds"]) >= 0.72
+            or overlap_ratio(box, item["bounds"]) > SURFACE_CONTAINMENT_LIMIT
+            for item in kept
+        ):
+            continue
+        kept.append(candidate)
+    return kept[:SURFACES_PER_FRAME]
+
+
+def detect_surfaces(frame: np.ndarray, index: int) -> list[dict[str, Any]]:
+    """Find surfaces from edges alone, for when no models are loaded.
+
+    Kept for the smoke path and as the fallback if segmentation is missing; see
+    segment_surfaces for what this cannot do on rendered material.
+    """
+    height, width = frame.shape[:2]
+    edges = cv2.Canny(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY), 60, 160)
+    contours, _ = cv2.findContours(edges, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+    found = [
+        {
+            "frame": index,
+            "bounds": list(cv2.boundingRect(contour)),
+            "confidence": 0.6,
+        }
+        for contour in contours
+    ]
+    return admit_surfaces(found, width, height)
 
 
 def camera_measure(
@@ -629,13 +746,57 @@ def classify_locale(text: str) -> str:
 
 
 def representative_text(samples: list[dict[str, Any]]) -> dict[str, Any]:
+    """The reading the track actually makes most of the time.
+
+    Weighting by length alone lets one outlier speak for the whole track: where
+    EasyOCR reads a line word by word on most frames and as a single box on a
+    few, the long whole-line reading outscores the short word it shares the
+    track with, and the owner ends up captioned with text it never shows in
+    that position. Majority first keeps the word; length still breaks ties, so
+    a complete reading still beats a truncated one.
+    """
+    counts = collections.Counter(normalized_text(sample["text"]) for sample in samples)
     return max(
         samples,
         key=lambda sample: (
+            counts[normalized_text(sample["text"])],
             float(sample["confidence"]) * len(normalized_text(sample["text"])),
             float(sample["confidence"]),
         ),
     )
+
+
+# Two text tracks in the same place at the same time are one line read twice,
+# not two things to draw. Both halves matter: side-by-side words in a line
+# share only about 5% of the smaller box, but a caption that swaps mid-clip
+# puts the replacement word exactly where the old one was -- same pixels,
+# disjoint frames -- and that one is real.
+TEXT_OVERLAP_LIMIT = 0.5
+TEXT_LIFETIME_OVERLAP_LIMIT = 0.5
+
+
+def median_bounds(samples: list[dict[str, Any]]) -> list[float]:
+    return [
+        statistics.median(float(sample["bounds"][axis]) for sample in samples)
+        for axis in range(4)
+    ]
+
+
+def overlap_ratio(a: list[float], b: list[float]) -> float:
+    """Shared area as a fraction of the smaller box."""
+    width = max(0.0, min(a[0] + a[2], b[0] + b[2]) - max(a[0], b[0]))
+    height = max(0.0, min(a[1] + a[3], b[1] + b[3]) - max(a[1], b[1]))
+    smaller = min(a[2] * a[3], b[2] * b[3])
+    return 0.0 if smaller <= 0 else width * height / smaller
+
+
+def lifetime_overlap(a: list[dict[str, Any]], b: list[dict[str, Any]]) -> float:
+    """Shared frames as a fraction of the shorter track's span."""
+    first_a, last_a = min(s["frame"] for s in a), max(s["frame"] for s in a)
+    first_b, last_b = min(s["frame"] for s in b), max(s["frame"] for s in b)
+    shared = min(last_a, last_b) - max(first_a, first_b) + 1
+    shorter = min(last_a - first_a, last_b - first_b) + 1
+    return 0.0 if shorter <= 0 else max(0, shared) / shorter
 
 
 def track_text(candidates: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
@@ -676,45 +837,126 @@ def track_text(candidates: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
             )
             if candidate["confidence"] > existing["confidence"]:
                 best_group[best_group.index(existing)] = candidate
-    return sorted(
+    ordered = sorted(
         (group for group in grouped if len({sample["frame"] for sample in group}) >= 2),
         key=lambda group: (
             len(group),
             statistics.median(item["confidence"] for item in group),
         ),
         reverse=True,
-    )[:20]
+    )
+    # EasyOCR reads the same line two ways across a clip: word by word on most
+    # frames, and as one box on a few. Both readings can survive grouping and
+    # each becomes an owner, so the renderer paints the same glyphs twice a few
+    # pixels apart. Keep the stronger reading and drop whatever sits on top of
+    # it for the same frames; `ordered` already puts the longest-lived, most
+    # confident track first.
+    kept: list[list[dict[str, Any]]] = []
+    for group in ordered:
+        box = median_bounds(group)
+        if any(
+            overlap_ratio(box, median_bounds(other)) > TEXT_OVERLAP_LIMIT
+            and lifetime_overlap(group, other) > TEXT_LIFETIME_OVERLAP_LIMIT
+            for other in kept
+        ):
+            continue
+        kept.append(group)
+        if len(kept) == 20:
+            break
+    return kept
+
+
+def shape_agreement(a: list[float], b: list[float]) -> float:
+    """How alike two boxes are once their positions are taken away.
+
+    Overlap answers "same place and same shape?" in one number, which is why it
+    breaks on a surface that merely moved. Sliding the two boxes onto a common
+    centre first leaves the half of the question that motion cannot disturb, so
+    a card that crossed the frame still agrees with itself, while a tall card
+    and a short bar in the same spot still do not.
+    """
+    return box_iou(
+        [0.0, 0.0, a[2], a[3]],
+        [(a[2] - b[2]) / 2, (a[3] - b[3]) / 2, b[2], b[3]],
+    )
+
+
+def centroid_separation(a: list[float], b: list[float]) -> float:
+    """How far two boxes' centres are apart, in units of their own size.
+
+    Scale-free on purpose: the same physical drift has to read the same whether
+    the surface is a full-width card or a small chip, so nothing here can be
+    expressed in bare pixels.
+    """
+    scale = max(a[2], a[3], b[2], b[3])
+    if scale <= 0:
+        return float("inf")
+    return (
+        math.hypot(
+            (a[0] + a[2] / 2) - (b[0] + b[2] / 2),
+            (a[1] + a[3] / 2) - (b[1] + b[3] / 2),
+        )
+        / scale
+    )
 
 
 def track_surfaces(
     candidates: list[dict[str, Any]],
 ) -> list[list[dict[str, Any]]]:
+    """Link per-frame detections into one track per surface.
+
+    Two things decide a link, and the frame decides them together.
+
+    What counts as the same surface is centroid continuity measured in units of
+    the surface's own size, which is what the reference interpretation contract
+    asks association to report and what this file's text tracker already uses.
+    Overlap alone cannot express it: two boxes stop touching as soon as a
+    surface travels its own width between frames, and then no overlap threshold
+    can hold the track together whatever it is set to.
+
+    Which detection gets which track is then one choice over the whole frame
+    rather than a race. Taking the largest box first let it claim a track that
+    fitted a smaller box better, and the smaller box -- having nothing left to
+    join -- opened a second track on a surface that already had one.
+    """
+    by_frame: dict[int, list[dict[str, Any]]] = collections.defaultdict(list)
+    for candidate in candidates:
+        by_frame[candidate["frame"]].append(candidate)
     grouped: list[list[dict[str, Any]]] = []
-    for candidate in sorted(
-        candidates,
-        key=lambda item: (
-            item["frame"],
-            -(item["bounds"][2] * item["bounds"][3]),
-        ),
-    ):
-        best_group: list[dict[str, Any]] | None = None
-        best_iou = 0.25
-        for group in grouped:
-            previous = group[-1]
-            gap = candidate["frame"] - previous["frame"]
-            overlap = box_iou(candidate["bounds"], previous["bounds"])
-            if 1 <= gap <= 12 and overlap > best_iou:
-                best_group = group
-                best_iou = overlap
-        if best_group is None:
-            grouped.append([candidate])
-        else:
-            best_group.append(candidate)
+    for frame in sorted(by_frame):
+        detections = by_frame[frame]
+        open_tracks = [
+            group
+            for group in grouped
+            if 1 <= frame - group[-1]["frame"] <= SURFACE_TRACK_GAP
+        ]
+        cost = np.full((len(detections), len(open_tracks)), np.inf)
+        for row, detection in enumerate(detections):
+            for column, group in enumerate(open_tracks):
+                previous = group[-1]["bounds"]
+                separation = centroid_separation(detection["bounds"], previous)
+                if (
+                    separation <= SURFACE_MATCH_REACH
+                    and shape_agreement(detection["bounds"], previous)
+                    >= SURFACE_SHAPE_AGREEMENT
+                ):
+                    cost[row, column] = separation
+        taken: set[int] = set()
+        if open_tracks and np.isfinite(cost).any():
+            finite = np.where(np.isfinite(cost), cost, SURFACE_MATCH_REACH * 1_000)
+            rows, columns = linear_sum_assignment(finite)
+            for row, column in zip(rows, columns):
+                if np.isfinite(cost[row, column]):
+                    open_tracks[column].append(detections[row])
+                    taken.add(row)
+        for row, detection in enumerate(detections):
+            if row not in taken:
+                grouped.append([detection])
     return sorted(
         (group for group in grouped if len(group) >= 2),
         key=len,
         reverse=True,
-    )[:6]
+    )[:SURFACE_TRACKS]
 
 
 def box_iou(left: list[int], right: list[int]) -> float:
@@ -1433,7 +1675,17 @@ def compile_bundle(
         analysis = cv2.resize(native, ANALYSIS_SIZE, interpolation=cv2.INTER_AREA)
         gray = cv2.cvtColor(analysis, cv2.COLOR_BGR2GRAY)
         frame_ocr = detect_ocr(models, native, analysis, index)
-        frame_surfaces = detect_surfaces(native, index)
+        # Segmentation answers what a surface is; the tracker carries the answer
+        # across the frames in between, and interpolate_track fills a sample
+        # into every one of them. Frames that are not keyframes contribute no
+        # surface candidates at all, which is why the stride has to stay within
+        # what the tracker will bridge.
+        if models.get("segmenter") is None:
+            frame_surfaces = detect_surfaces(native, index)
+        elif index % SEGMENTER_STRIDE == 0:
+            frame_surfaces = segment_surfaces(models, native, index)
+        else:
+            frame_surfaces = []
         matte, recurrent = matte_measure(models, analysis, recurrent)
         depth_field = depth_measure(models, analysis)
         for candidate in [*frame_ocr, *frame_surfaces]:

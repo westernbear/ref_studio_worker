@@ -335,3 +335,247 @@ class ClassifyLocaleTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def word(frame: int, text: str, box: list[int], confidence: float = 0.9) -> dict:
+    return {
+        "frame": frame,
+        "text": text,
+        "confidence": confidence,
+        "bounds": box,
+    }
+
+
+class TextTrackReadingTest(unittest.TestCase):
+    """Guards the two defects that made the preview paint "AAny NNeeed"."""
+
+    ANY = [142, 413, 114, 71]
+    RIGHT = [250, 426, 123, 45]
+    WHOLE_LINE = [147, 420, 225, 58]
+
+    def line_read_both_ways(self) -> list[dict]:
+        # What EasyOCR actually returned for the reference clip: the line read
+        # word by word on most frames, whole on a few, and the right-hand word
+        # swapping from "case" to "Need" partway through.
+        out: list[dict] = []
+        for frame in range(0, 43):
+            out.append(word(frame, "Any", self.ANY))
+            out.append(word(frame, "case", self.RIGHT))
+        for frame in range(45, 75):
+            out.append(word(frame, "Any", self.ANY))
+            out.append(word(frame, "Need", [248, 437, 127, 51]))
+        for frame in (11, 20, 33):
+            out.append(word(frame, "Any case", self.WHOLE_LINE, 0.99))
+        for frame in (46, 55, 61):
+            out.append(word(frame, "Any Need", self.WHOLE_LINE, 0.99))
+        return out
+
+    def test_a_whole_line_reading_never_speaks_for_a_single_word(self) -> None:
+        from compiler.pipeline import representative_text
+
+        tracks = track_text(self.line_read_both_ways())
+        texts = [representative_text(track)["text"] for track in tracks]
+        self.assertNotIn("Any case", texts)
+        self.assertNotIn("Any Need", texts)
+        self.assertEqual(sorted(texts), ["Any", "Need", "case"])
+
+    def test_a_word_that_replaces_another_in_place_survives(self) -> None:
+        from compiler.pipeline import representative_text
+
+        tracks = track_text(self.line_read_both_ways())
+        by_text = {representative_text(track)["text"]: track for track in tracks}
+        # "case" and "Need" occupy the same pixels at different times; dropping
+        # either as a duplicate loses half the caption.
+        self.assertLess(max(s["frame"] for s in by_text["case"]), 45)
+        self.assertGreaterEqual(min(s["frame"] for s in by_text["Need"]), 45)
+
+    def test_two_readings_of_the_same_frames_collapse_to_one(self) -> None:
+        from compiler.pipeline import representative_text
+
+        doubled = [word(frame, "Any", self.ANY) for frame in range(0, 40)]
+        doubled += [word(frame, "Anv", [145, 415, 112, 70]) for frame in range(0, 40)]
+        tracks = track_text(doubled)
+        self.assertEqual(
+            [representative_text(track)["text"] for track in tracks], ["Any"]
+        )
+
+
+def card_scene(width: int, height: int, count: int, cell: int, columns: int):
+    """A dark frame holding `count` glowing cards of `cell` px, drawn the same
+    way whatever the frame's shape -- so the only thing that varies between two
+    calls is what is being tested."""
+    import cv2
+
+    image = np.full((height, width, 3), 8, np.uint8)
+    for index in range(count):
+        x = 60 + (index % columns) * (cell + 30)
+        y = 80 + (index // columns) * (cell + 30)
+        cv2.rectangle(image, (x, y), (x + cell, y + cell), (180, 120, 60), -1)
+        cv2.rectangle(image, (x, y), (x + cell, y + cell), (255, 220, 180), 3)
+        cv2.circle(image, (x + cell // 2, y + cell // 2), cell // 5, (250, 250, 250), -1)
+    return image
+
+
+class SurfaceDetectionTest(unittest.TestCase):
+    def test_the_same_cards_are_found_whichever_way_the_frame_turns(self) -> None:
+        from compiler.pipeline import detect_surfaces
+
+        # Identical cards, identical pixel count, opposite orientation. Sizing
+        # the gate off the frame's width made the landscape frame demand a card
+        # two thirds wider than the portrait one, and it found none at all.
+        for cell in (150, 100):
+            portrait = detect_surfaces(card_scene(516, 870, 4, cell, 2), 0)
+            landscape = detect_surfaces(card_scene(870, 516, 4, cell, 2), 0)
+            self.assertEqual(
+                len(portrait), len(landscape), f"{cell}px cards differ by orientation"
+            )
+            self.assertEqual(len(portrait), 4)
+
+    def test_a_glow_inside_a_card_is_not_a_second_card(self) -> None:
+        import cv2
+
+        from compiler.pipeline import detect_surfaces
+
+        # One card with a large bright core: the outline and the core are
+        # nested, so their IoU is far below the duplicate threshold and an IoU
+        # test alone reports two surfaces where a viewer sees one.
+        image = np.full((870, 516, 3), 8, np.uint8)
+        cv2.rectangle(image, (60, 80), (460, 480), (180, 120, 60), -1)
+        cv2.rectangle(image, (60, 80), (460, 480), (255, 220, 180), 3)
+        cv2.rectangle(image, (110, 130), (410, 430), (250, 250, 250), -1)
+        self.assertEqual(len(detect_surfaces(image, 0)), 1)
+
+
+class SurfaceTrackingTest(unittest.TestCase):
+    """A surface that moves is still one surface."""
+
+    @staticmethod
+    def sweeping(speed: int, count: int = 3, cell: int = 150, frames: int = 60):
+        import cv2
+
+        travel = 516 - cell - 80
+        clip = []
+        for frame in range(frames):
+            image = np.full((870, 516, 3), 8, np.uint8)
+            walked = (speed * frame) % (2 * travel)
+            x = 40 + (walked if walked <= travel else 2 * travel - walked)
+            for index in range(count):
+                y = 90 + index * (cell + 40)
+                cv2.rectangle(image, (x, y), (x + cell, y + cell), (180, 120, 60), -1)
+                cv2.rectangle(image, (x, y), (x + cell, y + cell), (255, 220, 180), 3)
+                cv2.circle(
+                    image, (x + cell // 2, y + cell // 2), cell // 5, (250, 250, 250), -1
+                )
+            clip.append(image)
+        return clip
+
+    def tracks_for(self, clip):
+        from compiler.pipeline import detect_surfaces
+
+        found = []
+        for index, frame in enumerate(clip):
+            found.extend(detect_surfaces(frame, index))
+        return track_surfaces(found)
+
+    def test_speed_does_not_split_a_surface_into_several_owners(self) -> None:
+        # Comparing a detection with the track's last observed box made this
+        # speed-dependent: past roughly the card's own width per frame the two
+        # boxes stopped touching and one card became two owners.
+        for speed in (2, 25, 100, 150):
+            tracks = self.tracks_for(self.sweeping(speed))
+            self.assertEqual(len(tracks), 3, f"{speed} px/frame split the cards")
+            for track in tracks:
+                span = max(s["frame"] for s in track) - min(s["frame"] for s in track)
+                self.assertEqual(span + 1, 60, f"{speed} px/frame broke a track")
+
+    def test_a_frame_holding_nine_surfaces_yields_nine_owners(self) -> None:
+        import cv2
+
+        clip = []
+        for frame in range(60):
+            image = np.full((870, 516, 3), 8, np.uint8)
+            for index in range(9):
+                x = 50 + (index % 3) * 165 + int(3 * np.sin(frame / 9 + index))
+                y = 70 + (index // 3) * 165 + int(3 * np.cos(frame / 11 + index))
+                cv2.rectangle(image, (x, y), (x + 140, y + 140), (180, 120, 60), -1)
+                cv2.rectangle(image, (x, y), (x + 140, y + 140), (255, 220, 180), 3)
+                cv2.circle(image, (x + 70, y + 70), 28, (250, 250, 250), -1)
+            clip.append(image)
+        self.assertEqual(len(self.tracks_for(clip)), 9)
+
+
+class SegmentedSurfaceTest(unittest.TestCase):
+    """The segmentation path, with the model stood in for."""
+
+    class Segmenter:
+        """Returns what MobileSAM returns for a card holding a glyph: the card,
+        the glyph nested inside it, and a neighbouring card."""
+
+        def __init__(self, boxes):
+            self.boxes = boxes
+            self.calls = 0
+
+        def generate(self, image):
+            self.calls += 1
+            return [
+                {"bbox": box, "area": box[2] * box[3], "predicted_iou": 0.94}
+                for box in self.boxes
+            ]
+
+    def models_with(self, boxes):
+        return {"segmenter": self.Segmenter(boxes)}
+
+    def test_a_glyph_inside_a_card_does_not_become_a_second_surface(self) -> None:
+        from compiler.pipeline import segment_surfaces
+
+        # In the 480-tall frame the segmenter sees: a card, its glyph, another
+        # card. Only the two cards are surfaces.
+        models = self.models_with(
+            [[20, 30, 120, 130], [50, 60, 60, 70], [160, 30, 120, 130]]
+        )
+        frame = np.zeros((960, 540, 3), np.uint8)
+        found = segment_surfaces(models, frame, 0)
+        self.assertEqual(len(found), 2)
+
+    def test_boxes_come_back_in_the_frame_s_own_pixels(self) -> None:
+        from compiler.pipeline import segment_surfaces
+
+        # The segmenter sees a half-height copy, so a box at 20,30 sized
+        # 120x130 there is at 40,60 sized 240x260 in the frame itself.
+        models = self.models_with([[20, 30, 120, 130]])
+        frame = np.zeros((960, 540, 3), np.uint8)
+        self.assertEqual(segment_surfaces(models, frame, 7)[0]["bounds"], [40, 60, 240, 260])
+        self.assertEqual(segment_surfaces(models, frame, 7)[0]["frame"], 7)
+
+    def test_keyframes_are_within_the_gap_the_tracker_bridges(self) -> None:
+        from compiler.pipeline import SEGMENTER_STRIDE, SURFACE_TRACK_GAP
+
+        # Frames between keyframes contribute nothing, so a stride wider than
+        # the tracker's reach would break every track. Half of it leaves room
+        # for one missed keyframe.
+        self.assertLessEqual(SEGMENTER_STRIDE * 2, SURFACE_TRACK_GAP)
+
+    def test_a_surface_seen_only_on_keyframes_is_still_tracked_throughout(self) -> None:
+        from compiler.pipeline import SEGMENTER_STRIDE, interpolate_track
+
+        # One card drifting, sampled only every SEGMENTER_STRIDE frames.
+        samples = [
+            {
+                "frame": f,
+                "bounds": [100 + f, 200 + f, 150, 150],
+                "confidence": 0.9,
+                "ownerEffects": {
+                    "bloom": 0.1,
+                    "defocus": 0.1,
+                    "rim": 0.1,
+                    "confidence": 1.0,
+                },
+            }
+            for f in range(0, 120, SEGMENTER_STRIDE)
+        ]
+        tracks = track_surfaces(samples)
+        self.assertEqual(len(tracks), 1)
+        filled = interpolate_track(tracks[0], 30)
+        self.assertEqual(
+            [s["frame"] for s in filled], list(range(0, samples[-1]["frame"] + 1))
+        )
