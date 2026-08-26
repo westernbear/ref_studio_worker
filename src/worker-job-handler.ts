@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
 import { CompilerOrchestrator } from "./compiler-orchestrator.js";
+import { projectEvidenceTracks } from "./evidence/tracks.js";
+import { renderEvidenceVideo } from "./evidence/render-evidence-video.js";
 import { normalizeMedia } from "./media-normalizer.js";
 import { runCommand, type CommandRunner } from "./process-runner.js";
 import {
@@ -54,6 +56,13 @@ const WorkflowPayload = z
     z
       .object({
         ...CommonPayload,
+        phase: z.literal("evidence-video"),
+        evidence: z.record(z.string(), z.unknown()),
+      })
+      .strict(),
+    z
+      .object({
+        ...CommonPayload,
         ...RenderPayload,
         phase: z.literal("preview"),
       })
@@ -95,7 +104,12 @@ type CompileEvidenceResult = Readonly<{
 export type WorkflowPipelineDependencies = Readonly<{
   api: Pick<
     WorkerApi,
-    "downloadSource" | "reportProgress" | "uploadArtifact" | "uploadPreview"
+    | "downloadSource"
+    | "reportProgress"
+    | "uploadArtifact"
+    | "uploadPreview"
+    | "uploadEvidenceVideo"
+    | "uploadSafetySample"
   >;
   runCommand?: CommandRunner;
   compileEvidence?: (
@@ -104,6 +118,7 @@ export type WorkflowPipelineDependencies = Readonly<{
   renderDelivery?: (
     input: RenderDeliveryInput,
   ) => Promise<Record<string, unknown>>;
+  renderEvidenceVideo?: typeof renderEvidenceVideo;
   workRoot?: string;
   renderDeadlineMs?: number;
 }>;
@@ -162,6 +177,8 @@ export const createWorkflowJobHandler = (
   const command = dependencies.runCommand ?? runCommand;
   const compile = dependencies.compileEvidence ?? defaultCompileEvidence;
   const render = dependencies.renderDelivery ?? renderWorkflowDelivery;
+  const renderEvidence =
+    dependencies.renderEvidenceVideo ?? renderEvidenceVideo;
   return async (job, signal) => {
     const payload = WorkflowPayload.parse(job.payload);
     const root = dependencies.workRoot ?? tmpdir();
@@ -282,6 +299,32 @@ export const createWorkflowJobHandler = (
           },
         };
       }
+      if (payload.phase === "evidence-video") {
+        await progress("evidence-overlay", 0.5);
+        const tracks = projectEvidenceTracks(payload.evidence);
+        await renderEvidence(
+          {
+            normalizedPath,
+            outputPath,
+            workspace,
+            tracks,
+            fps: payload.sourceFps,
+            signal,
+          },
+          command,
+        );
+        await progress("evidence-video-upload", 0.95);
+        const artifact = await dependencies.api.uploadEvidenceVideo(
+          job.jobId,
+          outputPath,
+          signal,
+        );
+        return {
+          protocol: "rvs.worker.v1",
+          phase: "evidence-video",
+          evidenceVideoArtifactId: artifact.artifactId,
+        };
+      }
       const evidenceDigest = createHash("sha256")
         .update(JSON.stringify(payload.evidence))
         .digest("hex");
@@ -362,11 +405,27 @@ export const createWorkflowJobHandler = (
             report,
           };
         }
+        // safetySampleFramePath is a local worker-filesystem path, meaningful
+        // only for the upload below -- strip it before the report is sent to
+        // the API, whose RenderReport schema is .strict().
+        const { safetySampleFramePath, ...outgoingReport } = report as Record<
+          string,
+          unknown
+        > & { safetySampleFramePath?: unknown };
+        const safetySample =
+          typeof safetySampleFramePath === "string"
+            ? await dependencies.api.uploadSafetySample(
+                job.jobId,
+                safetySampleFramePath,
+                renderSignal,
+              )
+            : null;
         return {
           protocol: "rvs.worker.v1",
           phase: "render",
           artifactId: artifact.artifactId,
-          report,
+          safetySampleArtifactId: safetySample?.artifactId ?? null,
+          report: outgoingReport,
         };
       } catch (error) {
         if (signal.aborted)

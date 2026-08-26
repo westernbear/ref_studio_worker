@@ -37,6 +37,11 @@ const Owner = z
     assetRef: z.string().min(1),
     confidence: z.number().min(0).max(1),
     content: z.string().optional(),
+    sourceLocale: z.string().optional(),
+    translatedText: z.string().optional(),
+    translationProvider: z.string().optional(),
+    translationSourceHash: z.string().optional(),
+    translationConfidence: z.number().min(0).max(1).optional(),
   })
   .strict();
 const Asset = z
@@ -494,6 +499,13 @@ export async function renderWorkflowDelivery(
   for await (const chunk of createReadStream(input.outputPath))
     outputHash.update(chunk);
   const output = await stat(input.outputPath);
+  const safetySampleFramePath =
+    input.mode === "delivery"
+      ? join(
+          framesDirectory,
+          `frame-${String(Math.floor(DELIVERY_FRAME_COUNT / 2)).padStart(6, "0")}.png`,
+        )
+      : null;
   return {
     status: "PASS",
     protocol: "rvs.render-report.v1",
@@ -509,5 +521,6 @@ export async function renderWorkflowDelivery(
     },
     runtime: captureReport,
     qc,
+    safetySampleFramePath,
   };
 }

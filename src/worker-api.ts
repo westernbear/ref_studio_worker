@@ -63,6 +63,16 @@ export type WorkerApi = Readonly<{
     sourcePath: string,
     signal: AbortSignal,
   ): Promise<ArtifactUpload>;
+  uploadEvidenceVideo(
+    jobId: string,
+    sourcePath: string,
+    signal: AbortSignal,
+  ): Promise<ArtifactUpload>;
+  uploadSafetySample(
+    jobId: string,
+    sourcePath: string,
+    signal: AbortSignal,
+  ): Promise<ArtifactUpload>;
 }>;
 export type Fetcher = (
   input: URL | RequestInfo,
@@ -227,16 +237,21 @@ export function createWorkerApi(
   };
   const upload = async (
     jobId: string,
-    kind: "artifact" | "preview-artifact",
+    kind:
+      | "artifact"
+      | "preview-artifact"
+      | "evidence-video-artifact"
+      | "safety-sample-artifact",
     sourcePath: string,
     signal: AbortSignal,
+    contentType: string = "video/mp4",
   ): Promise<ArtifactUpload> => {
     const path = `${prefix}/jobs/${encodeURIComponent(jobId)}/${kind}`;
-    const source = await openAsBlob(sourcePath, { type: "video/mp4" });
+    const source = await openAsBlob(sourcePath, { type: contentType });
     const init = {
       method: "POST",
       headers: {
-        "content-type": "video/mp4",
+        "content-type": contentType,
         "content-length": String(source.size),
       },
       body: source,
@@ -403,5 +418,9 @@ export function createWorkerApi(
       upload(jobId, "artifact", sourcePath, signal),
     uploadPreview: (jobId, sourcePath, signal) =>
       upload(jobId, "preview-artifact", sourcePath, signal),
+    uploadEvidenceVideo: (jobId, sourcePath, signal) =>
+      upload(jobId, "evidence-video-artifact", sourcePath, signal),
+    uploadSafetySample: (jobId, sourcePath, signal) =>
+      upload(jobId, "safety-sample-artifact", sourcePath, signal, "image/png"),
   };
 }

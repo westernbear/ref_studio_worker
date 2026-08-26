@@ -513,6 +513,26 @@ def normalized_text(value: str) -> str:
     return "".join(character.casefold() for character in value if character.isalnum())
 
 
+def is_hangul(character: str) -> bool:
+    # Hangul Syllables, Jamo, Compatibility Jamo, Jamo Extended-A/B.
+    code = ord(character)
+    return (
+        0xAC00 <= code <= 0xD7A3
+        or 0x1100 <= code <= 0x11FF
+        or 0x3130 <= code <= 0x318F
+        or 0xA960 <= code <= 0xA97F
+        or 0xD7B0 <= code <= 0xD7FF
+    )
+
+
+def classify_locale(text: str) -> str:
+    letters = [character for character in text if character.isalpha()]
+    if not letters:
+        return "en-US"
+    hangul = sum(1 for character in letters if is_hangul(character))
+    return "ko-KR" if hangul / len(letters) > 0.5 else "en-US"
+
+
 def representative_text(samples: list[dict[str, Any]]) -> dict[str, Any]:
     return max(
         samples,
@@ -994,6 +1014,7 @@ def scene_input(
                     float(sample["confidence"]) for sample in samples
                 ),
                 "content": representative["text"].lstrip("'\"~( "),
+                "sourceLocale": classify_locale(representative["text"]),
             }
         )
         assets.append(

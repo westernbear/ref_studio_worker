@@ -8,6 +8,7 @@ from unittest import mock
 import numpy as np
 
 from compiler.pipeline import (
+    classify_locale,
     compile_bundle,
     map_bounds,
     scene_input,
@@ -197,6 +198,41 @@ class TrackTextTest(unittest.TestCase):
         )
 
         self.assertEqual("NEEDS_CHOICE", scene["needsChoice"][0]["state"])
+
+    def test_scene_tags_text_owner_source_locale(self) -> None:
+        def owner(frame: int, text: str) -> dict:
+            return {
+                "frame": frame,
+                "text": text,
+                "confidence": 0.9,
+                "bounds": [100 + frame, 200, 400, 80],
+                "canvasWidth": 1080,
+                "canvasHeight": 1920,
+                "ownerEffects": {"bloom": 0.2, "defocus": 0.3, "rim": 0.4},
+            }
+
+        scene = scene_input(
+            {"tenantId": "ten_a"},
+            120,
+            30,
+            [[owner(0, "안녕하세요"), owner(119, "안녕하세요")]],
+            [],
+            [],
+            ["#101820"],
+        )
+
+        self.assertEqual("ko-KR", scene["owners"][1]["sourceLocale"])
+
+
+class ClassifyLocaleTest(unittest.TestCase):
+    def test_classifies_hangul_majority_text_as_ko_kr(self) -> None:
+        self.assertEqual("ko-KR", classify_locale("안녕하세요"))
+
+    def test_classifies_latin_majority_text_as_en_us(self) -> None:
+        self.assertEqual("en-US", classify_locale("hello world"))
+
+    def test_classifies_empty_or_symbol_only_text_as_en_us(self) -> None:
+        self.assertEqual("en-US", classify_locale("123!!"))
 
 
 if __name__ == "__main__":

@@ -26,6 +26,11 @@ export type Owner = {
   readonly assetRef: string;
   readonly confidence: number;
   readonly content?: string | undefined;
+  readonly sourceLocale?: string | undefined;
+  readonly translatedText?: string | undefined;
+  readonly translationProvider?: string | undefined;
+  readonly translationSourceHash?: string | undefined;
+  readonly translationConfidence?: number | undefined;
 };
 export type Asset = {
   readonly assetId: string;

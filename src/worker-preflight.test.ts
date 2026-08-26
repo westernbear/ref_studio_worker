@@ -124,4 +124,19 @@ describe("worker runtime preflight", () => {
     ).rejects.toThrow("PREFLIGHT_TIMEOUT");
     expect(timeout).toHaveBeenCalledWith(120_000);
   });
+
+  it("fails closed when the pinned font file is missing", async () => {
+    await expect(
+      runWorkerPreflight(new AbortController().signal, {
+        runCommand: async () => ({ stdout: "151.0.7922.138", stderr: "" }),
+        readIdentityFile: async (path: string) => {
+          if (path.includes("font")) throw new Error("ENOENT");
+          return Buffer.from("manifest-v1");
+        },
+        captureFrames: async () => {
+          throw new Error("must not capture without a verified font");
+        },
+      }),
+    ).rejects.toThrow("ENOENT");
+  });
 });
