@@ -52,6 +52,17 @@ describe("process termination", () => {
     ).rejects.toThrow("WORKER_JOB_CANCELLED");
   });
 
+  it("keeps the tail of stderr (the actual error), not the banner, when truncating", async () => {
+    const banner = "B".repeat(2_500);
+    const script = `process.stderr.write(${JSON.stringify(banner)}); process.stderr.write("\\nREAL_ERROR: something broke\\n"); process.exit(1);`;
+    await expect(
+      runCommand(process.execPath, ["-e", script], {
+        cwd: process.cwd(),
+        signal: new AbortController().signal,
+      }),
+    ).rejects.toThrow("REAL_ERROR: something broke");
+  });
+
   it("reports the command deadline after terminating the child", async () => {
     await expect(
       runCommand(process.execPath, ["-e", "setInterval(() => {}, 1_000)"], {

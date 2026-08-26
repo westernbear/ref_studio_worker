@@ -82,7 +82,7 @@ export const runCommand: CommandRunner = async (command, args, options) => {
     if (stoppedFor !== null) throw new Error(stoppedFor);
     if (result.code !== 0)
       throw new Error(
-        `WORKER_PROCESS_FAILED:${command}:${stderr.replaceAll(options.cwd, "[workspace]").trim().slice(0, 2_000)}`,
+        `WORKER_PROCESS_FAILED:${command}:${stderr.replaceAll(options.cwd, "[workspace]").trim().slice(-2_000)}`,
       );
     return { stdout, stderr };
   } finally {
