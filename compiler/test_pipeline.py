@@ -10,6 +10,7 @@ import numpy as np
 from compiler.pipeline import (
     classify_locale,
     compile_bundle,
+    content_window,
     map_bounds,
     scene_input,
     track_surfaces,
@@ -40,6 +41,18 @@ class FakeCapture:
             return float(self.frames[0].shape[0])
         return 0.0
 
+    def isOpened(self) -> bool:  # noqa: N802 - mirrors the cv2 API
+        return True
+
+    def set(self, property_id: int, value: float) -> bool:
+        import cv2
+
+        # content_window seeks while sampling for letterbox bars; rewinding
+        # here keeps the subsequent full read starting from frame 0.
+        if property_id == cv2.CAP_PROP_POS_FRAMES:
+            self.index = int(value)
+        return True
+
     def read(self) -> tuple[bool, np.ndarray | None]:
         if self.index >= len(self.frames):
             return False, None
@@ -48,7 +61,7 @@ class FakeCapture:
         return True, frame
 
     def release(self) -> None:
-        pass
+        self.index = 0
 
 
 class TrackTextTest(unittest.TestCase):
@@ -170,6 +183,91 @@ class TrackTextTest(unittest.TestCase):
                 }
             ),
         )
+
+    def test_content_window_crops_pillarbox_and_ignores_bar_watermark(self) -> None:
+        # A 9:16 clip exported inside a 16:9 canvas, with a static watermark
+        # burned into the right bar -- the shape that made the compiler
+        # analyse mostly padding and adopt the watermark as an owner.
+        frames = []
+        for index in range(8):
+            frame = np.zeros((870, 1588, 3), dtype=np.uint8)
+            frame[:, 532:1048] = 40 + index * 8
+            frame[40:80, 1200:1500] = 90
+            frames.append(frame)
+        with TemporaryDirectory() as directory:
+            artifact = Path(directory) / "normalized.mkv"
+            artifact.write_bytes(b"normalized")
+            with mock.patch(
+                "compiler.pipeline.cv2.VideoCapture",
+                return_value=FakeCapture(frames),
+            ):
+                window = content_window(artifact, len(frames))
+        self.assertEqual((532, 0, 516, 870), window)
+
+    def test_compile_bundle_analyses_the_cropped_frame(self) -> None:
+        frames = []
+        for index in range(4):
+            frame = np.zeros((870, 1588, 3), dtype=np.uint8)
+            frame[:, 532:1048] = 40 + index * 8
+            frames.append(frame)
+        seen: list[tuple[int, int]] = []
+
+        def record(frame: np.ndarray, index: int) -> list[dict]:
+            seen.append((frame.shape[1], frame.shape[0]))
+            return []
+
+        with TemporaryDirectory() as directory:
+            artifact = Path(directory) / "normalized.mkv"
+            artifact.write_bytes(b"normalized")
+            with (
+                mock.patch("compiler.pipeline.load_models", return_value={}),
+                mock.patch(
+                    "compiler.pipeline.cv2.VideoCapture",
+                    return_value=FakeCapture(frames),
+                ),
+                mock.patch("compiler.pipeline.analyze_audio", return_value=[]),
+                mock.patch("compiler.pipeline.detect_surfaces", side_effect=record),
+            ):
+                compile_bundle(
+                    {
+                        "tenantId": "ten_a",
+                        "jobId": "job-a",
+                        "attemptId": "attempt-a",
+                        "artifactPath": str(artifact),
+                    },
+                    artifact,
+                    len(frames),
+                    30,
+                )
+        # Not (1588, 870): the bars must be gone before anything measures.
+        self.assertEqual([(516, 870)] * len(frames), seen)
+
+    def test_content_window_keeps_the_frame_when_there_are_no_bars(self) -> None:
+        frames = [np.full((96, 54, 3), 120, dtype=np.uint8) for _ in range(4)]
+        with TemporaryDirectory() as directory:
+            artifact = Path(directory) / "normalized.mkv"
+            artifact.write_bytes(b"normalized")
+            with mock.patch(
+                "compiler.pipeline.cv2.VideoCapture",
+                return_value=FakeCapture(frames),
+            ):
+                self.assertEqual(
+                    (0, 0, 54, 96), content_window(artifact, len(frames))
+                )
+
+    def test_cropped_pillarbox_fills_the_render_canvas(self) -> None:
+        # Before the crop this mapped to 1080x592 in a 1080x1920 canvas --
+        # 69% of the output was guaranteed to be black bars.
+        mapped = map_bounds(
+            {
+                "frame": 0,
+                "bounds": [0, 0, 516, 870],
+                "canvasWidth": 516,
+                "canvasHeight": 870,
+            }
+        )
+        self.assertEqual(1080, mapped["width"])
+        self.assertGreater(mapped["height"], 1800)
 
     def test_scene_emits_foreground_owner_from_confident_matte_evidence(self) -> None:
         mattes = [

@@ -21,6 +21,12 @@ import numpy as np
 ADMITTED_FPS = {24, 25, 30, 50, 60}
 ANALYSIS_SIZE = (540, 960)
 MAX_FRAMES = 240
+# Letterbox/pillarbox detection. A bar is a band of rows or columns that stays
+# near-black for the whole clip; measuring the mean (not the peak) keeps a
+# static watermark burned into the bar from being mistaken for content.
+BAR_SAMPLE_FRAMES = 24
+BAR_LEVEL = 0.08
+BAR_MIN_EXTENT = 0.30
 
 
 class CompilerFailure(RuntimeError):
@@ -223,6 +229,64 @@ def detect_ocr(
             }
         )
     return found
+
+
+def _longest_lit_run(profile: np.ndarray) -> tuple[int, int]:
+    """Widest contiguous band of the profile that carries light."""
+    peak = float(profile.max())
+    if peak <= 0:
+        return 0, len(profile) - 1
+    lit = profile > peak * BAR_LEVEL
+    best = (0, len(profile) - 1)
+    best_len = -1
+    start: int | None = None
+    for i, on in enumerate([*lit, False]):
+        if on and start is None:
+            start = i
+        elif not on and start is not None:
+            if i - start > best_len:
+                best_len, best = i - start, (start, i - 1)
+            start = None
+    return best
+
+
+def content_window(artifact: Path, frame_count: int) -> tuple[int, int, int, int]:
+    """Crop rectangle (x, y, width, height) excluding letterbox/pillarbox bars.
+
+    Sources exported as, say, a 9:16 clip inside a 16:9 canvas otherwise get
+    analysed mostly on padding: the bars drag every measurement toward black,
+    swallow the size gates in detect_surfaces, and -- once map_bounds fits the
+    padded frame into the render canvas -- leave the reconstruction confined to
+    a small band. Anything burned into the bars (a watermark) is not part of
+    the reference either, so it must not become an owner.
+    """
+    capture = cv2.VideoCapture(str(artifact))
+    if not capture.isOpened():
+        fail("NORMALIZED_ARTIFACT_CORRUPT")
+    width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    step = max(1, frame_count // BAR_SAMPLE_FRAMES)
+    total = np.zeros((height, width), dtype=np.float64)
+    sampled = 0
+    for index in range(0, frame_count, step):
+        capture.set(cv2.CAP_PROP_POS_FRAMES, index)
+        ok, frame = capture.read()
+        if not ok:
+            continue
+        total += cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        sampled += 1
+    capture.release()
+    if sampled == 0:
+        return 0, 0, width, height
+    mean = total / sampled
+    x0, x1 = _longest_lit_run(mean.mean(axis=0))
+    y0, y1 = _longest_lit_run(mean.mean(axis=1))
+    crop_width, crop_height = x1 - x0 + 1, y1 - y0 + 1
+    # A crop this aggressive means the measurement was wrong, not that the
+    # source is mostly padding -- keep the full frame instead.
+    if crop_width < width * BAR_MIN_EXTENT or crop_height < height * BAR_MIN_EXTENT:
+        return 0, 0, width, height
+    return x0, y0, crop_width, crop_height
 
 
 def detect_surfaces(frame: np.ndarray, index: int) -> list[dict[str, Any]]:
@@ -1310,15 +1374,17 @@ def compile_bundle(
     frames: list[dict[str, Any]] = []
     previous_gray: np.ndarray | None = None
     recurrent: list[Any] = [None, None, None, None]
-    width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH))
-    height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    crop_x, crop_y, width, height = content_window(artifact, frame_count)
     progress("all-frame-analysis", 0.02)
     stage_started = time.monotonic()
     for index in range(frame_count):
-        ok, native = capture.read()
+        ok, decoded_frame = capture.read()
         if not ok:
             capture.release()
             fail("MISSING_TEMPORAL_FRAME")
+        # Everything downstream measures and maps against `native`, so the
+        # crop has to happen here -- once -- rather than at each consumer.
+        native = decoded_frame[crop_y : crop_y + height, crop_x : crop_x + width]
         analysis = cv2.resize(native, ANALYSIS_SIZE, interpolation=cv2.INTER_AREA)
         gray = cv2.cvtColor(analysis, cv2.COLOR_BGR2GRAY)
         frame_ocr = detect_ocr(models, native, analysis, index)
