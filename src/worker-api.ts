@@ -63,6 +63,11 @@ export type WorkerApi = Readonly<{
     sourcePath: string,
     signal: AbortSignal,
   ): Promise<ArtifactUpload>;
+  uploadPreviewLabeled(
+    jobId: string,
+    sourcePath: string,
+    signal: AbortSignal,
+  ): Promise<ArtifactUpload>;
   uploadEvidenceVideo(
     jobId: string,
     sourcePath: string,
@@ -240,6 +245,7 @@ export function createWorkerApi(
     kind:
       | "artifact"
       | "preview-artifact"
+      | "preview-labeled-artifact"
       | "evidence-video-artifact"
       | "safety-sample-artifact",
     sourcePath: string,
@@ -418,6 +424,8 @@ export function createWorkerApi(
       upload(jobId, "artifact", sourcePath, signal),
     uploadPreview: (jobId, sourcePath, signal) =>
       upload(jobId, "preview-artifact", sourcePath, signal),
+    uploadPreviewLabeled: (jobId, sourcePath, signal) =>
+      upload(jobId, "preview-labeled-artifact", sourcePath, signal),
     uploadEvidenceVideo: (jobId, sourcePath, signal) =>
       upload(jobId, "evidence-video-artifact", sourcePath, signal),
     uploadSafetySample: (jobId, sourcePath, signal) =>

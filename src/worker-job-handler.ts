@@ -6,6 +6,7 @@ import { z } from "zod";
 import { CompilerOrchestrator } from "./compiler-orchestrator.js";
 import { projectEvidenceTracks } from "./evidence/tracks.js";
 import { renderEvidenceVideo } from "./evidence/render-evidence-video.js";
+import { renderVfxLabelVideo } from "./evidence/vfx-labels.js";
 import { normalizeMedia } from "./media-normalizer.js";
 import { runCommand, type CommandRunner } from "./process-runner.js";
 import {
@@ -108,6 +109,7 @@ export type WorkflowPipelineDependencies = Readonly<{
     | "reportProgress"
     | "uploadArtifact"
     | "uploadPreview"
+    | "uploadPreviewLabeled"
     | "uploadEvidenceVideo"
     | "uploadSafetySample"
   >;
@@ -119,9 +121,23 @@ export type WorkflowPipelineDependencies = Readonly<{
     input: RenderDeliveryInput,
   ) => Promise<Record<string, unknown>>;
   renderEvidenceVideo?: typeof renderEvidenceVideo;
+  renderVfxLabelVideo?: typeof renderVfxLabelVideo;
   workRoot?: string;
   renderDeadlineMs?: number;
 }>;
+
+// browserPassSpec is typed as passthrough, so read the shader list defensively
+// rather than asserting a shape the schema does not promise.
+const ShaderList = z.object({
+  passList: z.array(z.object({ shader: z.string().nullable() }).passthrough()),
+});
+const sceneShaders = (spec: unknown): readonly string[] => {
+  const parsed = ShaderList.safeParse(spec);
+  if (!parsed.success) return [];
+  return parsed.data.passList
+    .map((entry) => entry.shader)
+    .filter((shader): shader is string => shader !== null);
+};
 
 const defaultCompileEvidence = async (
   input: CompileEvidenceInput,
@@ -179,6 +195,8 @@ export const createWorkflowJobHandler = (
   const render = dependencies.renderDelivery ?? renderWorkflowDelivery;
   const renderEvidence =
     dependencies.renderEvidenceVideo ?? renderEvidenceVideo;
+  const renderLabels =
+    dependencies.renderVfxLabelVideo ?? renderVfxLabelVideo;
   return async (job, signal) => {
     const payload = WorkflowPayload.parse(job.payload);
     const root = dependencies.workRoot ?? tmpdir();
@@ -406,10 +424,30 @@ export const createWorkflowJobHandler = (
           unknown
         > & { safetySampleFramePath?: unknown };
         if (mode === "preview") {
+          // The animatic ships in two forms: a clean one for judging the
+          // motion, and one captioned with the treatments it applies, which
+          // is what the review comparison puts beside the reference.
+          const labeledPath = join(workspace, "preview-labeled.mp4");
+          await renderLabels(
+            {
+              previewPath: outputPath,
+              outputPath: labeledPath,
+              workspace,
+              shaders: sceneShaders(payload.compilation.browserPassSpec),
+              signal: renderSignal,
+            },
+            command,
+          );
+          const labeled = await dependencies.api.uploadPreviewLabeled(
+            job.jobId,
+            labeledPath,
+            renderSignal,
+          );
           return {
             protocol: "rvs.worker.v1",
             phase: "preview",
             previewArtifactId: artifact.artifactId,
+            previewLabeledArtifactId: labeled.artifactId,
             report: outgoingReport,
           };
         }

@@ -136,6 +136,14 @@ const dependencies = () => {
         sizeBytes: (await readFile(sourcePath)).byteLength,
       };
     }),
+    uploadPreviewLabeled: vi.fn(async (_jobId: string, sourcePath: string) => {
+      await readFile(sourcePath);
+      return {
+        artifactId: "preview-labeled-a",
+        sha256: "c".repeat(64),
+        sizeBytes: 1,
+      };
+    }),
     uploadPreview: vi.fn(async (_jobId, sourcePath) => {
       events.push("upload-preview");
       return {
@@ -309,6 +317,7 @@ describe("workflow job handler", () => {
       protocol: "rvs.worker.v1",
       phase: "preview",
       previewArtifactId: "preview-a",
+      previewLabeledArtifactId: "preview-labeled-a",
       report: { status: "PASS", mode: "preview" },
     });
     expect(fixture.api.uploadPreview).toHaveBeenCalledOnce();
