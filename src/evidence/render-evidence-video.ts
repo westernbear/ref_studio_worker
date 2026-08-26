@@ -1,3 +1,5 @@
+import { writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { runCommand, type CommandRunner } from "../process-runner.js";
 import type { EvidenceTrack } from "./tracks.js";
 
@@ -19,9 +21,10 @@ const frameWindow = (frame: number, fps: number): readonly [number, number] => [
 
 // ponytail: one drawbox/drawtext clause per frame per track keeps the
 // string generation simple and testable without a timed-command script.
-// If clip length or track count grows enough to slow ffmpeg's filter
-// parser down, switch to the `sendcmd` filter instead of adding more
-// per-frame clauses here.
+// A real 120-frame/multi-track clip already produces a filter string past
+// the OS argv limit (spawn() throws E2BIG) -- renderEvidenceVideo writes
+// this to a file and passes it via `-/filter:v` instead of `-vf <string>`,
+// so the string's length here is no longer bounded by argv at all.
 export const buildEvidenceOverlayFilter = (
   tracks: readonly EvidenceTrack[],
   options: Readonly<{ fps: number }>,
@@ -79,6 +82,12 @@ export const renderEvidenceVideo = async (
   command: CommandRunner = runCommand,
 ): Promise<void> => {
   const filter = buildEvidenceOverlayFilter(input.tracks, { fps: input.fps });
+  const filterArgs: string[] = [];
+  if (filter.length > 0) {
+    const filterPath = join(input.workspace, "evidence-overlay-filter.txt");
+    await writeFile(filterPath, filter, "utf8");
+    filterArgs.push("-/filter:v", filterPath);
+  }
   await command(
     process.env.RVS_FFMPEG_PATH ?? "ffmpeg",
     [
@@ -86,7 +95,7 @@ export const renderEvidenceVideo = async (
       "-y",
       "-i",
       input.normalizedPath,
-      ...(filter.length > 0 ? ["-vf", filter] : []),
+      ...filterArgs,
       "-c:a",
       "copy",
       input.outputPath,

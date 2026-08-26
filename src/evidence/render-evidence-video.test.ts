@@ -1,4 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
 import { buildEvidenceOverlayFilter, renderEvidenceVideo } from "./render-evidence-video.js";
 import type { EvidenceTrack } from "./tracks.js";
 import type { CommandRunner } from "../process-runner.js";
@@ -66,7 +69,14 @@ describe("buildEvidenceOverlayFilter", () => {
 });
 
 describe("renderEvidenceVideo", () => {
-  it("invokes ffmpeg with the generated filter and copies audio", async () => {
+  let workspace = "";
+  afterEach(async () => {
+    if (workspace) await rm(workspace, { recursive: true, force: true });
+    workspace = "";
+  });
+
+  it("writes the filter to a file and passes it via -/filter:v (never as an argv string)", async () => {
+    workspace = await mkdtemp(join(tmpdir(), "rvs-evidence-video-test-"));
     const calls: Array<{ command: string; args: readonly string[] }> = [];
     const command: CommandRunner = async (cmd, args) => {
       calls.push({ command: cmd, args });
@@ -74,9 +84,9 @@ describe("renderEvidenceVideo", () => {
     };
     await renderEvidenceVideo(
       {
-        normalizedPath: "/work/normalized.mkv",
-        outputPath: "/work/evidence.mp4",
-        workspace: "/work",
+        normalizedPath: join(workspace, "normalized.mkv"),
+        outputPath: join(workspace, "evidence.mp4"),
+        workspace,
         tracks: [
           {
             ownerId: "foreground-subject",
@@ -92,12 +102,18 @@ describe("renderEvidenceVideo", () => {
     );
     expect(calls).toHaveLength(1);
     expect(calls[0]?.command).toBe("ffmpeg");
-    expect(calls[0]?.args).toContain("-vf");
-    expect(calls[0]?.args).toContain("/work/evidence.mp4");
+    expect(calls[0]?.args).not.toContain("-vf");
+    expect(calls[0]?.args).toContain("-/filter:v");
+    const filterPath = join(workspace, "evidence-overlay-filter.txt");
+    expect(calls[0]?.args).toContain(filterPath);
+    const filterContents = await readFile(filterPath, "utf8");
+    expect(filterContents).toContain("drawbox=x=10:y=20:w=100:h=200:color=yellow@0.8");
+    expect(calls[0]?.args).toContain(join(workspace, "evidence.mp4"));
     expect(calls[0]?.args).toContain("copy");
   });
 
-  it("omits -vf when there are no tracks", async () => {
+  it("omits -/filter:v when there are no tracks", async () => {
+    workspace = await mkdtemp(join(tmpdir(), "rvs-evidence-video-test-"));
     const calls: string[][] = [];
     const command: CommandRunner = async (cmd, args) => {
       calls.push([cmd, ...args]);
@@ -105,9 +121,9 @@ describe("renderEvidenceVideo", () => {
     };
     await renderEvidenceVideo(
       {
-        normalizedPath: "/work/normalized.mkv",
-        outputPath: "/work/evidence.mp4",
-        workspace: "/work",
+        normalizedPath: join(workspace, "normalized.mkv"),
+        outputPath: join(workspace, "evidence.mp4"),
+        workspace,
         tracks: [],
         fps: 30,
         signal: new AbortController().signal,
@@ -115,5 +131,6 @@ describe("renderEvidenceVideo", () => {
       command,
     );
     expect(calls[0]).not.toContain("-vf");
+    expect(calls[0]).not.toContain("-/filter:v");
   });
 });
