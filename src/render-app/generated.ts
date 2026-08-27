@@ -98,16 +98,20 @@ const drawMarkup = (
   // already carrying the element's animated scale from spec-compile.ts,
   // is authoritative over the source image's own aspect ratio) and
   // respecting the element's animated opacity via the shared `opacity`
-  // attribute above. image-rendering:pixelated is a determinism choice,
-  // not a quality one: nearest-neighbour sampling is exact integer-index
-  // math, with no floating-point interpolation left for two independent
-  // Chromium launches to disagree about (see the determinism test).
+  // attribute above. Default (smooth/bilinear) scaling was measured
+  // deterministic across 8 independent Chromium launches with a
+  // deliberately awkward, non-integer upscale of a noisy fixture image
+  // (gen-render-delivery.determinism.test.ts exercises this for real);
+  // image-rendering:pixelated was tried too and was equally stable, but
+  // was dropped in favour of the sharper default -- a product photo
+  // scaled with nearest-neighbour looks blocky for no reproducibility
+  // benefit once smooth scaling is already proven stable.
   if (asset?.kind === "image") {
     const path = assetPaths.get(asset.assetId);
     if (path === undefined)
       throw new GeneratedRenderAppError("ASSET_PATH_UNRESOLVED");
     const href = escapeXml(pathToFileURL(path).href);
-    return `<image ${attributes} href="${href}" preserveAspectRatio="none" style="image-rendering:pixelated" />`;
+    return `<image ${attributes} href="${href}" preserveAspectRatio="none" />`;
   }
   // ponytail: video-kind assets are out of scope for this batch (only
   // images resolve to real pixels -- see the image branch above). A
