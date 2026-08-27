@@ -107,6 +107,41 @@ export const unavailableMaterialProvider: MaterialProvider = {
   },
 };
 
+// Narrows a real provider to the one kind it actually handles, refusing
+// every other kind through `fallback` (the fail-closed stub by default)
+// instead of letting it silently attempt -- or silently succeed at -- a
+// kind it was never built for. This is how the image provider gets wired
+// in without widening what video or font material can do: each lands as
+// its own `restrictToKind` call, composed alongside the others, so an
+// unimplemented kind keeps failing closed rather than falling through to
+// whichever provider happens to run last.
+//
+// `tool` forwards to the underlying provider's `tool` rather than copying
+// it once at construction time, because a provider whose identity is only
+// known after a call completes (see remote-image-material-provider.ts)
+// needs produceMaterial's post-`generate()` read of `.tool` to see the
+// up-to-date value.
+export function restrictToKind(
+  kind: MaterialKind,
+  provider: MaterialProvider,
+  fallback: MaterialProvider = unavailableMaterialProvider,
+): MaterialProvider {
+  // Tracks which of the two actually handled the most recent request, so
+  // the `tool` getter reflects whichever one produceMaterial is about to
+  // check -- not always `provider`, which would misreport a request the
+  // fallback served instead.
+  let active: MaterialProvider = provider;
+  return {
+    get tool() {
+      return active.tool;
+    },
+    generate: (request, signal) => {
+      active = request.kind === kind ? provider : fallback;
+      return active.generate(request, signal);
+    },
+  };
+}
+
 // Asks a provider for one asset's material and refuses to believe it
 // without checking. Everything a generated asset's provenance claims is
 // verified here, because the spec that goes on to be rendered carries this
