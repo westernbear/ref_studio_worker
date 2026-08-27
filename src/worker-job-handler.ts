@@ -2,7 +2,6 @@ import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { GenerationConfigSchema } from "@rvs/contracts";
 import { z } from "zod";
 import { CompilerOrchestrator } from "./compiler-orchestrator.js";
 import { projectEvidenceTracks } from "./evidence/tracks.js";
@@ -74,22 +73,6 @@ const WorkflowPayload = z
         ...CommonPayload,
         ...RenderPayload,
         phase: z.literal("render"),
-      })
-      .strict(),
-    // Mirrors the "author" phase apps/api/src/workers.ts now claims out
-    // (Task 3.3) -- this worker does not implement scene authoring itself
-    // (that call needs the AI provider secrets that live only in apps/api,
-    // see apps/api/src/author-scene.ts), so it never registers the "author"
-    // capability and should never actually receive this phase. Declared
-    // here anyway so the shared payload contract stays one source of truth
-    // and a future authoring-capable worker can reuse it; see the explicit
-    // guard below for what happens if this ever is dispatched here.
-    z
-      .object({
-        ...CommonPayload,
-        phase: z.literal("author"),
-        evidence: z.record(z.string(), z.unknown()),
-        generation: GenerationConfigSchema,
       })
       .strict(),
   ])
@@ -216,12 +199,6 @@ export const createWorkflowJobHandler = (
     dependencies.renderVfxLabelVideo ?? renderVfxLabelVideo;
   return async (job, signal) => {
     const payload = WorkflowPayload.parse(job.payload);
-    // This worker never registers the "author" capability (see the schema
-    // comment above), so apps/api's claim guard should never hand it one --
-    // fail loudly rather than falling through into the render pipeline
-    // below, which assumes a compiled IR this phase does not carry.
-    if (payload.phase === "author")
-      throw new Error("WORKER_CANNOT_AUTHOR_SCENES");
     const root = dependencies.workRoot ?? tmpdir();
     await mkdir(root, { recursive: true });
     const workspace = await mkdtemp(join(root, "rvs-worker-"));
