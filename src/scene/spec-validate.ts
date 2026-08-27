@@ -1,4 +1,4 @@
-import { SceneSpecSchema, type SceneSpec } from "@rvs/contracts";
+import { SceneSpecSchema, SPEC_EFFECTS, type SceneSpec } from "@rvs/contracts";
 
 // Fail-closed on a SceneSpec the renderer cannot honestly draw. Pure
 // function, no I/O, no clock -- same style as compileScene in ./compile.js.
@@ -16,6 +16,7 @@ const fail = (token: string): never => {
 };
 
 const EXTERNAL_URL = /^https?:\/\//iu;
+const ALLOWED_EFFECTS: ReadonlySet<string> = new Set(SPEC_EFFECTS);
 
 export function validateSceneSpec(
   spec: unknown,
@@ -51,6 +52,11 @@ export function validateSceneSpec(
     for (const element of beat.elements)
       if (element.content !== undefined && EXTERNAL_URL.test(element.content))
         fail("EXTERNAL_URL");
+
+  for (const beat of value.beats)
+    for (const element of beat.elements)
+      for (const effect of element.effects)
+        if (!ALLOWED_EFFECTS.has(effect)) fail("EFFECT_NOT_ALLOWLISTED");
 
   const assetsById = new Map(
     value.assets.map((asset) => [asset.assetId, asset] as const),

@@ -1,3 +1,4 @@
+import { SPEC_EFFECTS } from "@rvs/contracts";
 import type { FramePlan, SpecCompilation } from "../scene/spec-compile.js";
 import type { LocalFont, RenderedFrame } from "./index.js";
 
@@ -36,16 +37,20 @@ function validateLocalFonts(localFonts: readonly LocalFont[]): void {
   }
 }
 
-// Ruling 2: Phase 2 ships DOM/SVG only. blur/glow/drop-shadow are SVG filter
-// primitives, defined once and referenced per element by id.
+// Ruling 2: Phase 2 ships DOM/SVG only, and SPEC_EFFECTS is the allowlist of
+// SVG filter primitives a generated scene may request. `blur` and `glow`
+// used to be here too (each a feGaussianBlur-based filter def) but were
+// dropped from SPEC_EFFECTS -- feGaussianBlur is not bit-reproducible
+// across independent Chromium launches (see
+// gen-render-delivery.determinism.test.ts) -- so their filter defs are
+// dead code and are not emitted. Only what's still on the allowlist gets a
+// <filter> def, defined once and referenced per element by id.
 const FILTER_DEFS =
   "<defs>" +
-  '<filter id="effect-blur" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="6" /></filter>' +
-  '<filter id="effect-glow" x="-80%" y="-80%" width="260%" height="260%"><feGaussianBlur stdDeviation="10" result="blurred" /><feMerge><feMergeNode in="blurred" /><feMergeNode in="SourceGraphic" /></feMerge></filter>' +
   '<filter id="effect-drop-shadow" x="-50%" y="-50%" width="200%" height="200%"><feDropShadow dx="4" dy="6" stdDeviation="4" flood-opacity="0.6" /></filter>' +
   "</defs>";
 
-const KNOWN_EFFECTS = new Set(["blur", "glow", "drop-shadow"]);
+const KNOWN_EFFECTS: ReadonlySet<string> = new Set(SPEC_EFFECTS);
 
 const filterAttribute = (effects: readonly string[]): string => {
   const known = effects.filter((effect) => KNOWN_EFFECTS.has(effect));

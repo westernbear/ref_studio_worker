@@ -104,4 +104,20 @@ describe("validateSceneSpec", () => {
       validateSceneSpec(bad, new Set([...ok, "gen1"])),
     ).toThrow(/GENERATED_ASSET_WITHOUT_PROVENANCE/);
   });
+
+  // blur/glow were removed from SPEC_EFFECTS (both compile to
+  // feGaussianBlur, which is not bit-reproducible across independent
+  // Chromium launches -- see gen-render-delivery.determinism.test.ts). This
+  // proves validateSceneSpec still fails closed on them even though the
+  // schema itself only checks shape (non-empty strings), not membership.
+  it("rejects an effect that isn't on the allowlist", () => {
+    const blurred = withElement(fixtureSpec, { effects: ["blur"] });
+    expect(() => validateSceneSpec(blurred, ok)).toThrow(
+      /EFFECT_NOT_ALLOWLISTED/,
+    );
+    const glowing = withElement(fixtureSpec, { effects: ["glow"] });
+    expect(() => validateSceneSpec(glowing, ok)).toThrow(
+      /EFFECT_NOT_ALLOWLISTED/,
+    );
+  });
 });

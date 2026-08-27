@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { CANVAS, DELIVERY_FPS, type SceneSpec } from "@rvs/contracts";
+import { CANVAS, DELIVERY_FPS, SPEC_EFFECTS, type SceneSpec } from "@rvs/contracts";
 import { describe, expect, it } from "vitest";
 import { renderGeneratedDelivery } from "./gen-render-delivery.js";
 
@@ -13,6 +13,13 @@ import { renderGeneratedDelivery } from "./gen-render-delivery.js";
 // to a mocked capture/ffmpeg to force a green run -- if Chromium cannot
 // launch in a given environment, the test is reported SKIPPED (not PASSED),
 // and that must be surfaced honestly rather than hidden.
+//
+// This test is also the admission gate for SPEC_EFFECTS: the fixture below
+// renders one element per entry in SPEC_EFFECTS (built from the list
+// itself, not hand-copied), so an effect only belongs on the allowlist once
+// it has passed here. blur and glow were tried and removed after this test
+// caught them drifting; if a future effect is added to SPEC_EFFECTS without
+// actually being deterministic, this is the test that must fail.
 const defaultChromePath = fileURLToPath(
   new URL(
     "../../../runtime/hydrated/chrome-for-testing/chrome-linux64/chrome",
@@ -51,19 +58,20 @@ const shortFixtureSpec: SceneSpec = {
       startFrame: 0,
       endFrame: 6,
       shot: "hard-cut",
-      elements: [
-        {
-          elementId: "headline",
-          kind: "text",
-          content: "DETERMINISM",
-          box: { x: 100, y: 800, width: 880, height: 200 },
-          keyframes: [
-            { frame: 0, opacity: 0, ease: "linear" },
-            { frame: 5, opacity: 1, ease: "easeInOut" },
-          ],
-          effects: ["glow"],
-        },
-      ],
+      // One element per allowlisted effect, derived from SPEC_EFFECTS
+      // itself rather than hand-listed, so this fixture always exercises
+      // the whole current allowlist -- nothing more, nothing less.
+      elements: SPEC_EFFECTS.map((effect, index) => ({
+        elementId: `effect-${effect}`,
+        kind: "text" as const,
+        content: `EFFECT ${effect.toUpperCase()}`,
+        box: { x: 80, y: 200 + index * 300, width: 920, height: 200 },
+        keyframes: [
+          { frame: 0, opacity: 0, ease: "linear" as const },
+          { frame: 5, opacity: 1, ease: "easeInOut" as const },
+        ],
+        effects: [effect],
+      })),
     },
   ],
 };
