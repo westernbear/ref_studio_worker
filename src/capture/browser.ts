@@ -158,7 +158,11 @@ export type BrowserCaptureInput = Readonly<{
   chromePath: string;
   fontPath: string;
   frames: readonly RenderedFrame[];
-  residualRgb16x9: readonly (readonly number[])[];
+  // Required for "workflow" -- the measured lower-light field a WebGL2 pass
+  // reads from. A "generated" or "preflight" contract has no measured
+  // samples to offer, so this is optional for those and the page's own
+  // 432-value guard is satisfied with zeros instead (see captureBrowserFrames).
+  residualRgb16x9?: readonly (readonly number[])[];
   signal: AbortSignal;
   onFrame: (completed: number, total: number) => Promise<void>;
   renderContract:
@@ -167,7 +171,10 @@ export type BrowserCaptureInput = Readonly<{
         kind: "workflow";
         browserPassSpec: BrowserPassSpec;
         scene: SceneIR;
-      }>;
+      }>
+    // Phase 2 generated-scene path (ruling 4): DOM/SVG only, no owner-bound
+    // WebGL2 passes, so there is no BrowserPassSpec/SceneIR to carry.
+    | Readonly<{ kind: "generated" }>;
 }>;
 
 export type BrowserCaptureReport = Readonly<{
@@ -437,10 +444,20 @@ const stopBrowser = async (child: ChildProcess): Promise<void> => {
 export async function captureBrowserFrames(
   input: BrowserCaptureInput,
 ): Promise<BrowserCaptureReport> {
+  // "workflow" must supply a measured field per frame, exactly as before.
+  // "preflight"/"generated" have none to give -- default to zeros so the
+  // capture page's unconditional 432-value guard (window.renderFrame) is
+  // still satisfied even though no WebGL2 pass ever reads it for these
+  // contracts (their passList is always []).
+  const residualRgb16x9: readonly (readonly number[])[] =
+    input.renderContract.kind === "workflow"
+      ? (input.residualRgb16x9 ?? [])
+      : (input.residualRgb16x9 ??
+        input.frames.map(() => Array<number>(432).fill(0)));
   if (
     input.frames.length === 0 ||
-    input.residualRgb16x9.length !== input.frames.length ||
-    input.residualRgb16x9.some(
+    residualRgb16x9.length !== input.frames.length ||
+    residualRgb16x9.some(
       (field) =>
         field.length !== 432 ||
         field.some(
@@ -550,7 +567,7 @@ export async function captureBrowserFrames(
       const probe = RuntimeProbe.parse(
         await evaluate(
           client,
-          `window.renderFrame(${frame.frame}, ${JSON.stringify(frame.markup)}, ${JSON.stringify(input.residualRgb16x9[index])})`,
+          `window.renderFrame(${frame.frame}, ${JSON.stringify(frame.markup)}, ${JSON.stringify(residualRgb16x9[index])})`,
         ),
       );
       if (
@@ -610,7 +627,7 @@ export async function captureBrowserFrames(
     if (!first || !firstPng) throw new Error("RENDER_FRAMES_MISSING");
     await evaluate(
       client,
-      `window.renderFrame(${first.frame}, ${JSON.stringify(first.markup)}, ${JSON.stringify(input.residualRgb16x9[0])})`,
+      `window.renderFrame(${first.frame}, ${JSON.stringify(first.markup)}, ${JSON.stringify(residualRgb16x9[0])})`,
     );
     const repeated = await screenshot(client);
     if (Buffer.compare(firstPng, repeated) !== 0)
