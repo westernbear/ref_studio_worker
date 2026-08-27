@@ -1,4 +1,4 @@
-import { fixtureSpec, sha256Hex, type SceneSpec } from "@rvs/contracts";
+import { fixtureSpec, sha256Hex, type SceneSpec } from "../contracts/index.js";
 import { describe, expect, it } from "vitest";
 import { compileSceneSpec } from "./spec-compile.js";
 

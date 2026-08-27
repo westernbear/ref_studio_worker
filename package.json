@@ -16,7 +16,6 @@
     "compose:gpu": "docker compose -f docker-compose.yml -f docker-compose.gpu.yml run --rm worker"
   },
   "dependencies": {
-    "@rvs/contracts": "workspace:*",
     "zod": "4.1.5"
   },
   "devDependencies": {

@@ -1,7 +1,7 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CANVAS, DELIVERY_FPS, type SceneSpec } from "@rvs/contracts";
+import { CANVAS, DELIVERY_FPS, type SceneSpec } from "./contracts/index.js";
 import { describe, expect, it } from "vitest";
 import type {
   BrowserCaptureInput,

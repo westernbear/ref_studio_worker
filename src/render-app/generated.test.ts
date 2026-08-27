@@ -1,4 +1,4 @@
-import { fixtureSpec, type SceneSpec } from "@rvs/contracts";
+import { fixtureSpec, type SceneSpec } from "../contracts/index.js";
 import { describe, expect, it } from "vitest";
 import { compileSceneSpec } from "../scene/spec-compile.js";
 import { createGeneratedRenderApp } from "./generated.js";

@@ -7,7 +7,7 @@ import {
   DELIVERY_FPS,
   validateSceneSpec,
   type SceneSpec,
-} from "@rvs/contracts";
+} from "./contracts/index.js";
 import { z } from "zod";
 import {
   captureBrowserFrames,

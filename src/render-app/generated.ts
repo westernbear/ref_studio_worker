@@ -1,4 +1,4 @@
-import { SPEC_EFFECTS } from "@rvs/contracts";
+import { SPEC_EFFECTS } from "../contracts/index.js";
 import type { FramePlan, SpecCompilation } from "../scene/spec-compile.js";
 import type { LocalFont, RenderedFrame } from "./index.js";
 

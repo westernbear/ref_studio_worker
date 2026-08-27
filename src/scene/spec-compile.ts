@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { Ease, Keyframe, SceneSpec } from "@rvs/contracts";
+import type { Ease, Keyframe, SceneSpec } from "../contracts/index.js";
 
 export type FramePlan = {
   readonly frame: number;

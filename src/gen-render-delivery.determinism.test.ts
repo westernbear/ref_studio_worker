@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { CANVAS, DELIVERY_FPS, SPEC_EFFECTS, type SceneSpec } from "@rvs/contracts";
+import { CANVAS, DELIVERY_FPS, SPEC_EFFECTS, type SceneSpec } from "./contracts/index.js";
 import { describe, expect, it } from "vitest";
 import { renderGeneratedDelivery } from "./gen-render-delivery.js";
 
