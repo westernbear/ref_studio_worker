@@ -165,6 +165,7 @@ export async function renderGeneratedDelivery(
     compilation,
     [{ family: "Wanted Sans", path: fontPath }, ...fontAssets],
     input.spec.assets,
+    input.assetPaths,
   );
   const renderedFrames = compilation.frames.map((plan) =>
     app.renderFrame(plan.frame),

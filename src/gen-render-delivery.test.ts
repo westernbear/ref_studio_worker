@@ -153,12 +153,88 @@ describe("renderGeneratedDelivery", () => {
         ],
       };
 
+      let capturedMarkup: string | undefined;
       const report = await renderGeneratedDelivery(
         { spec: colourSpec, assetPaths: new Map(), outPath },
-        { captureFrames: fakeCapture, runCommand: fakeFfmpeg },
+        {
+          captureFrames: async (captureInput) => {
+            capturedMarkup = captureInput.frames[0]?.markup;
+            return fakeCapture(captureInput);
+          },
+          runCommand: fakeFfmpeg,
+        },
       );
 
       expect(report.frameSha256).toHaveLength(30);
+      // The colour asset's ref reaches the markup as a plain fill --
+      // never a file (colours never have one).
+      expect(capturedMarkup).toContain('data-element-id="wash"');
+      expect(capturedMarkup).toContain('fill="#ff5500"');
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("resolves an image element's assetRef to a local file:// reference", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "rvs-gen-delivery-"));
+    try {
+      const outPath = join(workspace, "out.mp4");
+      const fakeFfmpeg: CommandRunner = async (command, args) => {
+        if (command.endsWith("ffprobe"))
+          return { stdout: JSON.stringify(probe), stderr: "" };
+        const output = args.at(-1);
+        if (!output) throw new Error("TEST_OUTPUT_PATH_MISSING");
+        await writeFile(output, "media");
+        return { stdout: "", stderr: "" };
+      };
+      const imageSpec: SceneSpec = {
+        ...shortFixtureSpec,
+        assets: [
+          {
+            assetId: "hero-shot",
+            kind: "image",
+            origin: "attachment",
+            ref: "attachment://hero.png",
+          },
+        ],
+        beats: [
+          {
+            ...shortFixtureSpec.beats[0]!,
+            elements: [
+              {
+                elementId: "hero-image",
+                kind: "image",
+                assetRef: "hero-shot",
+                box: { x: 0, y: 0, width: 1080, height: 1920 },
+                keyframes: [],
+                effects: [],
+              },
+            ],
+          },
+        ],
+      };
+      const imagePath = join(workspace, "hero-shot.png");
+      await writeFile(imagePath, "not-decoded-in-this-test");
+
+      let capturedMarkup: string | undefined;
+      const report = await renderGeneratedDelivery(
+        {
+          spec: imageSpec,
+          assetPaths: new Map([["hero-shot", imagePath]]),
+          outPath,
+        },
+        {
+          captureFrames: async (captureInput) => {
+            capturedMarkup = captureInput.frames[0]?.markup;
+            return fakeCapture(captureInput);
+          },
+          runCommand: fakeFfmpeg,
+        },
+      );
+
+      expect(report.frameSha256).toHaveLength(30);
+      expect(capturedMarkup).toContain("<image ");
+      expect(capturedMarkup).toContain(`href="file://${imagePath}"`);
     } finally {
       await rm(workspace, { recursive: true, force: true });
     }

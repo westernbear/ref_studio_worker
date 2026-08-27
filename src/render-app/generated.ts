@@ -1,3 +1,4 @@
+import { pathToFileURL } from "node:url";
 import { SPEC_EFFECTS, type SpecAsset } from "../contracts/index.js";
 import type { FramePlan, SpecCompilation } from "../scene/spec-compile.js";
 import type { LocalFont, RenderedFrame } from "./index.js";
@@ -37,6 +38,19 @@ function validateLocalFonts(localFonts: readonly LocalFont[]): void {
   }
 }
 
+// Same remote-rejection shape as validateLocalFonts above: assetPaths only
+// ever holds paths the worker itself wrote to local disk (see
+// worker-job-handler.ts's scene-assets download loop and
+// gen-render-delivery.ts's assetPaths parameter), so this should never
+// trip in production -- it is the same defence-in-depth as
+// validateSceneSpec's EXTERNAL_URL rule, applied one layer closer to the
+// markup this module actually emits.
+function validateAssetPaths(assetPaths: ReadonlyMap<string, string>): void {
+  for (const path of assetPaths.values())
+    if (/^(https?:)?\/\//.test(path))
+      throw new GeneratedRenderAppError("REMOTE_ASSET_PATH_REJECTED");
+}
+
 // Ruling 2: Phase 2 ships DOM/SVG only, and SPEC_EFFECTS is the allowlist of
 // SVG filter primitives a generated scene may request. `blur`, `glow`, and
 // (once this batch painted a real background under a palette-aware fill)
@@ -60,19 +74,14 @@ const filterAttribute = (effects: readonly string[]): string => {
 // A "color" asset's ref is its own value (I5/item 3): it never resolves to
 // a file, so wherever an element wants a colour -- a text fill, a shape's
 // fill -- and names one of these by assetRef, that ref is used directly.
-const colorFill = (
-  assetRef: string | undefined,
-  assetsById: ReadonlyMap<string, SpecAsset>,
-): string | undefined => {
-  if (assetRef === undefined) return undefined;
-  const asset = assetsById.get(assetRef);
-  return asset?.kind === "color" ? asset.ref : undefined;
-};
+const colorFill = (asset: SpecAsset | undefined): string | undefined =>
+  asset?.kind === "color" ? asset.ref : undefined;
 
 const drawMarkup = (
   draw: FramePlan["draws"][number],
   palette: SpecCompilation["palette"],
   assetsById: ReadonlyMap<string, SpecAsset>,
+  assetPaths: ReadonlyMap<string, string>,
 ): string => {
   const assetAttribute =
     draw.assetRef !== undefined
@@ -81,18 +90,37 @@ const drawMarkup = (
   const attributes =
     `data-element-id="${escapeXml(draw.elementId)}"${assetAttribute}${filterAttribute(draw.effects)} ` +
     `x="${draw.box.x}" y="${draw.box.y}" width="${draw.box.width}" height="${draw.box.height}" opacity="${draw.opacity}"`;
+  const asset =
+    draw.assetRef !== undefined ? assetsById.get(draw.assetRef) : undefined;
+  // Item 1, the whole point of the material provider: an element whose
+  // assetRef resolves to an image asset draws that image at its box,
+  // stretched to fill it exactly (preserveAspectRatio="none" -- the box,
+  // already carrying the element's animated scale from spec-compile.ts,
+  // is authoritative over the source image's own aspect ratio) and
+  // respecting the element's animated opacity via the shared `opacity`
+  // attribute above. image-rendering:pixelated is a determinism choice,
+  // not a quality one: nearest-neighbour sampling is exact integer-index
+  // math, with no floating-point interpolation left for two independent
+  // Chromium launches to disagree about (see the determinism test).
+  if (asset?.kind === "image") {
+    const path = assetPaths.get(asset.assetId);
+    if (path === undefined)
+      throw new GeneratedRenderAppError("ASSET_PATH_UNRESOLVED");
+    const href = escapeXml(pathToFileURL(path).href);
+    return `<image ${attributes} href="${href}" preserveAspectRatio="none" style="image-rendering:pixelated" />`;
+  }
   // ponytail: video-kind assets are out of scope for this batch (only
-  // images resolve to real pixels -- see the module comment above the
-  // image branch, once one exists). A video-referencing element falls
-  // through to the same undrawn placeholder a bare shape gets.
+  // images resolve to real pixels -- see the image branch above). A
+  // video-referencing element falls through to the same undrawn
+  // placeholder a bare shape gets.
   if (draw.content !== undefined) {
     // Item 2: text must use the palette rather than defaulting -- an
     // explicit colour asset wins if the element names one, otherwise the
     // scene's hero colour, never the capture page's stylesheet default.
-    const fill = colorFill(draw.assetRef, assetsById) ?? palette.hero;
+    const fill = colorFill(asset) ?? palette.hero;
     return `<text ${attributes} fill="${escapeXml(fill)}" font-size="${Math.max(8, Math.round(draw.box.height * 0.8))}">${escapeXml(draw.content)}</text>`;
   }
-  const fill = colorFill(draw.assetRef, assetsById);
+  const fill = colorFill(asset);
   const fillAttribute = fill !== undefined ? ` fill="${escapeXml(fill)}"` : "";
   return `<rect ${attributes}${fillAttribute} />`;
 };
@@ -112,8 +140,10 @@ export function createGeneratedRenderApp(
   compilation: SpecCompilation,
   localFonts: readonly LocalFont[],
   assets: readonly SpecAsset[] = [],
+  assetPaths: ReadonlyMap<string, string> = new Map(),
 ): { readonly renderFrame: (frame: number) => RenderedFrame } {
   validateLocalFonts(localFonts);
+  validateAssetPaths(assetPaths);
   const assetsById = new Map(assets.map((asset) => [asset.assetId, asset] as const));
   const framesByIndex = new Map(
     compilation.frames.map((plan) => [plan.frame, plan] as const),
@@ -123,7 +153,7 @@ export function createGeneratedRenderApp(
       throw new GeneratedRenderAppError("INVALID_FRAME");
     const plan = framesByIndex.get(frame);
     const nodes = (plan?.draws ?? [])
-      .map((draw) => drawMarkup(draw, compilation.palette, assetsById))
+      .map((draw) => drawMarkup(draw, compilation.palette, assetsById, assetPaths))
       .join("");
     return {
       frame,

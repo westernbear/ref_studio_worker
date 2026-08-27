@@ -1,3 +1,4 @@
+import { pathToFileURL } from "node:url";
 import { fixtureSpec, type SceneSpec } from "../contracts/index.js";
 import { describe, expect, it } from "vitest";
 import { compileSceneSpec } from "../scene/spec-compile.js";
@@ -99,5 +100,51 @@ describe("createGeneratedRenderApp", () => {
     expect(markup.slice(washIndex, washIndex + 200)).toContain(
       'fill="#112233"',
     );
+  });
+
+  // fixtureSpec's beat-hero (frames 200-399) draws "hero-image", assetRef
+  // "hero-shot", an image-kind asset -- the whole point of the material
+  // provider (item 1).
+  it("draws an image asset at its box as a local file:// reference", () => {
+    const assetPaths = new Map([["hero-shot", "/tmp/hero-shot.png"]]);
+    const app = createGeneratedRenderApp(
+      compileSceneSpec(fixtureSpec),
+      [],
+      fixtureSpec.assets,
+      assetPaths,
+    );
+    const markup = app.renderFrame(250).markup;
+    const href = pathToFileURL("/tmp/hero-shot.png").href;
+    expect(markup).toContain(`data-element-id="hero-image"`);
+    expect(markup).toContain(`href="${href}"`);
+    // The background ground still paints as a <rect>; the hero-image
+    // element itself must be an <image>, not the old unfilled-rect
+    // placeholder.
+    const heroIndex = markup.indexOf('data-element-id="hero-image"');
+    const tagStart = markup.lastIndexOf("<", heroIndex);
+    expect(markup.slice(tagStart, tagStart + 6)).toBe("<image");
+  });
+
+  it("refuses to resolve an image asset to a remote-looking path", () => {
+    const assetPaths = new Map([
+      ["hero-shot", "https://cdn.example.com/hero.png"],
+    ]);
+    expect(() =>
+      createGeneratedRenderApp(
+        compileSceneSpec(fixtureSpec),
+        [],
+        fixtureSpec.assets,
+        assetPaths,
+      ),
+    ).toThrow(/REMOTE_ASSET_PATH_REJECTED/);
+  });
+
+  it("fails closed when an image asset has no resolved path", () => {
+    const app = createGeneratedRenderApp(
+      compileSceneSpec(fixtureSpec),
+      [],
+      fixtureSpec.assets,
+    );
+    expect(() => app.renderFrame(250)).toThrow(/ASSET_PATH_UNRESOLVED/);
   });
 });
