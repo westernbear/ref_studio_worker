@@ -1,4 +1,6 @@
 import { fileURLToPath } from "node:url";
+import { restrictToKind } from "./material-provider.js";
+import { createRemoteImageMaterialProvider } from "./remote-image-material-provider.js";
 import { createWorkerApi, type Fetcher } from "./worker-api.js";
 import { runWorkerDaemon } from "./worker-daemon.js";
 import { parseWorkerConfig } from "./worker-config.js";
@@ -13,7 +15,18 @@ export const createWorkerRuntime = (
   fetcher: Fetcher = fetch,
 ) => {
   const api = createWorkerApi(config, fetcher, preflight);
-  return { api, handleJob: createWorkflowJobHandler({ api }) };
+  return {
+    api,
+    handleJob: createWorkflowJobHandler({
+      api,
+      // Image is the one material kind implemented today; every other
+      // kind still fails closed through restrictToKind's fallback
+      // (unavailableMaterialProvider), so a self-hosted video or 3D
+      // provider can land later without this line changing.
+      materialProviderFactory: (jobId) =>
+        restrictToKind("image", createRemoteImageMaterialProvider(api, jobId)),
+    }),
+  };
 };
 
 export const main = async (
