@@ -173,10 +173,16 @@ export type WorkflowPipelineDependencies = Readonly<{
   ) => Promise<Record<string, unknown>>;
   renderEvidenceVideo?: typeof renderEvidenceVideo;
   renderVfxLabelVideo?: typeof renderVfxLabelVideo;
-  // The generate track. `materialProvider` is the one place a real
-  // provider is injected; left unset, resolve-scene-assets falls back to
-  // the fail-closed stub and any scene needing new material fails its job.
+  // The generate track. `materialProvider` is a fixed instance (tests
+  // inject it directly, e.g. a fake that never varies per job).
+  // `materialProviderFactory` is how a real provider is wired: it is
+  // called once per job, with that job's id, because the API's material
+  // endpoint is addressed by job id and a provider built at daemon
+  // startup cannot know it yet. `materialProvider` wins if both are set.
+  // Left both unset, resolve-scene-assets falls back to the fail-closed
+  // stub and any scene needing new material fails its job.
   materialProvider?: MaterialProvider;
+  materialProviderFactory?: (jobId: string) => MaterialProvider;
   renderGenerated?: typeof renderGeneratedDelivery;
   workRoot?: string;
   renderDeadlineMs?: number;
@@ -322,7 +328,13 @@ export const createWorkflowJobHandler = (
                 ),
               ...(dependencies.materialProvider
                 ? { provider: dependencies.materialProvider }
-                : {}),
+                : dependencies.materialProviderFactory
+                  ? {
+                      provider: dependencies.materialProviderFactory(
+                        job.jobId,
+                      ),
+                    }
+                  : {}),
             },
           );
         const assets = [];

@@ -316,6 +316,85 @@ describe("the assets worker phase", () => {
     });
   });
 
+  it("builds the real provider through the factory, once per job, with that job's id", async () => {
+    const fake = api();
+    const bytes = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 9]);
+    const materialProviderFactory = vi.fn((jobId: string): MaterialProvider => ({
+      tool: `remote@${jobId}`,
+      generate: async (request) => ({
+        bytes,
+        contentType: "image/png" as const,
+        provenance: {
+          tool: `remote@${jobId}`,
+          prompt: request.prompt,
+          seed: 11,
+          sha256: sha256(bytes),
+        },
+      }),
+    }));
+    const handler = createWorkflowJobHandler({
+      api: fake,
+      materialProviderFactory,
+    } as unknown as WorkflowPipelineDependencies);
+    const generated = spec(
+      [
+        {
+          assetId: "backdrop",
+          kind: "image",
+          origin: "generated",
+          ref: "generated://backdrop",
+          provenance: {
+            tool: "author-declared",
+            prompt: "a dark studio backdrop",
+            seed: 7,
+            sha256: "0".repeat(64),
+          },
+        },
+      ],
+      ["backdrop"],
+    );
+
+    const result = await handler(job("assets", generated), signal);
+
+    expect(materialProviderFactory).toHaveBeenCalledWith("job-a");
+    expect(materialProviderFactory).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({
+      assets: [
+        {
+          assetId: "backdrop",
+          provenance: {
+            tool: "remote@job-a",
+            prompt: "a dark studio backdrop",
+            seed: 11,
+            sha256: sha256(bytes),
+          },
+        },
+      ],
+    });
+  });
+
+  it("never calls generate on the factory's provider for a scene needing only attachments", async () => {
+    // The factory itself may run per job (building the wrapper is cheap,
+    // no network call happens until generate() is invoked) -- what must
+    // never happen is a vendor call for a scene that names no generated
+    // asset at all.
+    const fake = api();
+    const generate = vi.fn(() => {
+      throw new Error("must not be called");
+    });
+    const materialProviderFactory = vi.fn(
+      (): MaterialProvider => ({ tool: "remote", generate }),
+    );
+    const handler = createWorkflowJobHandler({
+      api: fake,
+      materialProviderFactory,
+    } as unknown as WorkflowPipelineDependencies);
+
+    await handler(job("assets", attachmentSpec), signal);
+
+    expect(generate).not.toHaveBeenCalled();
+  });
+
   it("refuses a payload whose spec is not the spec its digest names", async () => {
     const fake = api();
     const handler = createWorkflowJobHandler({

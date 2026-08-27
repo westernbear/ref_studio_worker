@@ -389,6 +389,29 @@ describe("workflow job handler", () => {
     expect(uploadLogs[1]).toContain('"artifactId":"artifact-a"');
   });
 
+  // The one way the material-generation wiring (worker-job-handler.ts,
+  // index.ts) could break the restore track: a job with no job.generation
+  // never reaches the `assets` phase, so nothing should ever call the
+  // material provider factory for it. A factory that throws proves it.
+  it("never touches the material provider factory for a restore-track render", async () => {
+    const fixture = dependencies();
+    const handler = createWorkflowJobHandler({
+      ...fixture.dependencies,
+      materialProviderFactory: () => {
+        throw new Error("must not be called for a restore-track job");
+      },
+    });
+
+    await expect(
+      handler(job("render"), new AbortController().signal),
+    ).resolves.toMatchObject({
+      protocol: "rvs.worker.v1",
+      phase: "render",
+      artifactId: "artifact-a",
+      report: { status: "PASS", mode: "delivery" },
+    });
+  });
+
   it("rejects tampered evidence and browser-pass digests before rendering", async () => {
     const fixture = dependencies();
     const handler = createWorkflowJobHandler(fixture.dependencies);
