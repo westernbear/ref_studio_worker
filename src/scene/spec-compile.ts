@@ -21,6 +21,11 @@ export type SpecCompilation = {
   readonly versionId: string;
   readonly digest: string;
   readonly canvas: SceneSpec["canvas"];
+  // Carried forward so the render app (generated.ts) can paint the
+  // background and default a text fill from what the author actually
+  // picked, instead of whatever the capture page's shared stylesheet
+  // defaults to. See generated.ts for where this is read.
+  readonly palette: SceneSpec["palette"];
   readonly frames: readonly FramePlan[];
   readonly passes: readonly {
     readonly passId: string;
@@ -28,15 +33,15 @@ export type SpecCompilation = {
     readonly shader: string | null;
   }[];
 };
-// ponytail: SceneSpec.palette, and each beat's .shot and the top-level
-// .mode, are authored, schema-validated, and folded into the spec digest,
-// but nothing below this line reads them -- FramePlan carries only
-// per-element box/opacity/effects. Image/video asset compositing and
-// palette-aware rendering are the next batch's work (whole-branch review
-// finding I5); until then a compiled scene draws default-white shapes and
-// black text regardless of what palette/shot/mode the author chose. This
-// is a deliberate, narrow scope boundary, not an oversight -- see the
-// matching comment at generated.ts's <rect> fallback.
+// ponytail: each beat's .shot and the top-level .mode are authored,
+// schema-validated, and folded into the spec digest, but nothing below
+// this line reads them -- FramePlan carries only per-element
+// box/opacity/effects. Both are camera and interpretation concerns (push-in
+// vs hard-cut, SWAP vs REINTERPRET), not material, and need their own
+// design -- this compiler does not invent motion for them. This is a
+// deliberate, narrow scope boundary, not an oversight; see the matching
+// comment at generated.ts's video-kind fallback for the asset-side half of
+// this same boundary.
 
 // Copied from apps/worker/src/scene/compile.ts (canonicalJson) rather than
 // imported -- see ruling 3: compile.ts, the restore track's compiler, stays
@@ -122,6 +127,7 @@ export function compileSceneSpec(spec: SceneSpec): SpecCompilation {
     versionId: `spec_${contentDigest.slice(0, 16)}`,
     digest: contentDigest,
     canvas: spec.canvas,
+    palette: spec.palette,
     frames,
     passes: [{ passId: "dom-svg", kind: "DOM/SVG", shader: null }],
   };

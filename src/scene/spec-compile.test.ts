@@ -69,6 +69,13 @@ describe("compileSceneSpec", () => {
     expect(compileSceneSpec(fixtureSpec).digest).toBe(sha256Hex(fixtureSpec));
   });
 
+  // I5 follow-up: palette used to be dropped entirely (see this file's
+  // module comment). The renderer cannot paint a background or default a
+  // text fill from something that never survived compilation.
+  it("carries the spec's palette forward", () => {
+    expect(compileSceneSpec(fixtureSpec).palette).toEqual(fixtureSpec.palette);
+  });
+
   it("changes digest when a keyframe moves one frame", () => {
     const moved = withKeyframe(fixtureSpec, { frame: 16 });
     expect(compileSceneSpec(moved).digest).not.toBe(
