@@ -137,10 +137,13 @@ export async function renderGeneratedDelivery(
   // ones this caller actually knows how to turn into bytes: whatever
   // assetPaths already resolved to a real file, plus any asset the model
   // declared as "generated" (gated separately by validateSceneSpec's own
-  // provenance check, not by path resolution).
+  // provenance check, not by path resolution), plus every colour asset --
+  // a colour's ref is its own value, so it has no file and the `assets`
+  // phase deliberately never stores one for it (see planSceneAssets).
   const resolvableAssetIds = new Set<string>(input.assetPaths.keys());
   for (const asset of input.spec.assets)
-    if (asset.origin === "generated") resolvableAssetIds.add(asset.assetId);
+    if (asset.origin === "generated" || asset.kind === "color")
+      resolvableAssetIds.add(asset.assetId);
   validateSceneSpec(input.spec, resolvableAssetIds);
 
   const command = dependencies.runCommand ?? runCommand;

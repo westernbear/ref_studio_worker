@@ -65,6 +65,27 @@ const probe = {
   ],
 };
 
+const fakeCapture = async (
+  captureInput: BrowserCaptureInput,
+): Promise<BrowserCaptureReport> => {
+  await captureInput.onFrame(
+    captureInput.frames.length,
+    captureInput.frames.length,
+  );
+  return {
+    chromiumVersion: "151.0.7922.138",
+    renderer: "ANGLE SwiftShader",
+    fontReady: true,
+    webgl2: true,
+    networkPolicy: "external-blocked",
+    repeatedFrameByteIdentity: true,
+    frameSha256: Array<string>(captureInput.frames.length).fill("a".repeat(64)),
+    passIds: [],
+    shaderDiagnostics: [],
+    limits: {},
+  };
+};
+
 describe("renderGeneratedDelivery", () => {
   it("renders the fixture spec to an mp4 with one hash per frame", async () => {
     const workspace = await mkdtemp(join(tmpdir(), "rvs-gen-delivery-"));
@@ -78,29 +99,6 @@ describe("renderGeneratedDelivery", () => {
         await writeFile(output, "media");
         return { stdout: "", stderr: "" };
       };
-      const fakeCapture = async (
-        captureInput: BrowserCaptureInput,
-      ): Promise<BrowserCaptureReport> => {
-        await captureInput.onFrame(
-          captureInput.frames.length,
-          captureInput.frames.length,
-        );
-        return {
-          chromiumVersion: "151.0.7922.138",
-          renderer: "ANGLE SwiftShader",
-          fontReady: true,
-          webgl2: true,
-          networkPolicy: "external-blocked",
-          repeatedFrameByteIdentity: true,
-          frameSha256: Array<string>(captureInput.frames.length).fill(
-            "a".repeat(64),
-          ),
-          passIds: [],
-          shaderDiagnostics: [],
-          limits: {},
-        };
-      };
-
       const report = await renderGeneratedDelivery(
         { spec: shortFixtureSpec, assetPaths: new Map(), outPath },
         { captureFrames: fakeCapture, runCommand: fakeFfmpeg },
@@ -110,6 +108,57 @@ describe("renderGeneratedDelivery", () => {
       expect(report.specDigest).toBe(compileSceneSpec(shortFixtureSpec).digest);
       expect(report.schema).toBe("rvs.gen-render-report.v1");
       expect(report.qc["status"]).toBe("PASS");
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("draws a scene whose only asset is a colour, which never has a file", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "rvs-gen-delivery-"));
+    try {
+      const outPath = join(workspace, "out.mp4");
+      const fakeFfmpeg: CommandRunner = async (command, args) => {
+        if (command.endsWith("ffprobe"))
+          return { stdout: JSON.stringify(probe), stderr: "" };
+        const output = args.at(-1);
+        if (!output) throw new Error("TEST_OUTPUT_PATH_MISSING");
+        await writeFile(output, "media");
+        return { stdout: "", stderr: "" };
+      };
+      const colourSpec: SceneSpec = {
+        ...shortFixtureSpec,
+        assets: [
+          {
+            assetId: "brand-hero",
+            kind: "color",
+            origin: "evidence",
+            ref: "#ff5500",
+          },
+        ],
+        beats: [
+          {
+            ...shortFixtureSpec.beats[0]!,
+            elements: [
+              ...shortFixtureSpec.beats[0]!.elements,
+              {
+                elementId: "wash",
+                kind: "shape",
+                assetRef: "brand-hero",
+                box: { x: 0, y: 0, width: 1080, height: 1920 },
+                keyframes: [],
+                effects: [],
+              },
+            ],
+          },
+        ],
+      };
+
+      const report = await renderGeneratedDelivery(
+        { spec: colourSpec, assetPaths: new Map(), outPath },
+        { captureFrames: fakeCapture, runCommand: fakeFfmpeg },
+      );
+
+      expect(report.frameSha256).toHaveLength(30);
     } finally {
       await rm(workspace, { recursive: true, force: true });
     }
