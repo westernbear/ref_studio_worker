@@ -107,17 +107,17 @@ describe("validateSceneSpec", () => {
 
   // blur/glow were removed from SPEC_EFFECTS (both compile to
   // feGaussianBlur, which is not bit-reproducible across independent
-  // Chromium launches -- see gen-render-delivery.determinism.test.ts). This
-  // proves validateSceneSpec still fails closed on them even though the
-  // schema itself only checks shape (non-empty strings), not membership.
-  it("rejects an effect that isn't on the allowlist", () => {
+  // Chromium launches -- see gen-render-delivery.determinism.test.ts).
+  // SceneSpecSchema enforces the allowlist directly (z.enum(SPEC_EFFECTS))
+  // so an unknown effect never reaches validateSceneSpec's own checks --
+  // it fails schema parsing, same as any other malformed spec. A known
+  // effect must still pass.
+  it("rejects an unknown effect as a schema violation", () => {
     const blurred = withElement(fixtureSpec, { effects: ["blur"] });
     expect(() => validateSceneSpec(blurred, ok)).toThrow(
-      /EFFECT_NOT_ALLOWLISTED/,
+      /SPEC_SCHEMA_INVALID/,
     );
-    const glowing = withElement(fixtureSpec, { effects: ["glow"] });
-    expect(() => validateSceneSpec(glowing, ok)).toThrow(
-      /EFFECT_NOT_ALLOWLISTED/,
-    );
+    const dropShadow = withElement(fixtureSpec, { effects: ["drop-shadow"] });
+    expect(validateSceneSpec(dropShadow, ok).schema).toBe("scene-spec-v1");
   });
 });
