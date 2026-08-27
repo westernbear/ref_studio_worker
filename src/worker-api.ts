@@ -4,6 +4,11 @@ import { rm, stat } from "node:fs/promises";
 import { PassThrough } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { z } from "zod";
+import {
+  MATERIAL_CONTENT_TYPES,
+  type MaterialProvenance,
+  type MaterialRequest,
+} from "./material-provider.js";
 import type { WorkerConfig } from "./worker-config.js";
 import type { WorkerPreflightReport } from "./worker-preflight.js";
 
@@ -26,6 +31,25 @@ const ArtifactUploadResponse = z.object({
   sha256: z.string().regex(/^[a-f0-9]{64}$/),
   sizeBytes: z.number().int().positive(),
 });
+const MaterialResponse = z.object({
+  contentType: z.enum(MATERIAL_CONTENT_TYPES),
+  // Base64, not a stream: the material endpoint answers a single JSON
+  // request with a single JSON response, same as every other worker<->API
+  // call this client makes -- see material-provider.ts's header comment on
+  // why the seam is one request in, one answer out, no partial success.
+  bytesBase64: z.string().min(1),
+  provenance: z.object({
+    tool: z.string().min(1),
+    prompt: z.string().min(1),
+    seed: z.number().optional(),
+    sha256: z.string().regex(/^[a-f0-9]{64}$/),
+  }),
+});
+export type GeneratedMaterialResponse = Readonly<{
+  bytes: Uint8Array;
+  contentType: (typeof MATERIAL_CONTENT_TYPES)[number];
+  provenance: MaterialProvenance;
+}>;
 export type WorkerJob = z.infer<typeof Job>;
 export type WorkerProgress = Readonly<{
   phase: "prepare" | "render";
@@ -109,6 +133,15 @@ export type WorkerApi = Readonly<{
     contentType: string,
     signal: AbortSignal,
   ): Promise<ArtifactUpload>;
+  // The `assets` phase's one way to get new material: the worker has no
+  // outbound network (see docker-compose.yml's worker-internal network),
+  // so this asks the API -- which holds the vendor key -- to make the call
+  // and hand back bytes plus provenance.
+  requestMaterial(
+    jobId: string,
+    request: MaterialRequest,
+    signal: AbortSignal,
+  ): Promise<GeneratedMaterialResponse>;
 }>;
 export type Fetcher = (
   input: URL | RequestInfo,
@@ -564,5 +597,33 @@ export function createWorkerApi(
         signal,
         contentType,
       ),
+    requestMaterial: async (jobId, materialRequest, signal) => {
+      const response = await post(
+        `${prefix}/jobs/${encodeURIComponent(jobId)}/material`,
+        {
+          assetId: materialRequest.assetId,
+          kind: materialRequest.kind,
+          prompt: materialRequest.prompt,
+          seed: materialRequest.seed,
+          canvas: materialRequest.canvas,
+        },
+        MaterialResponse,
+        signal,
+        sessionToken,
+        leaseFor(jobId),
+      );
+      return {
+        bytes: Buffer.from(response.bytesBase64, "base64"),
+        contentType: response.contentType,
+        provenance: {
+          tool: response.provenance.tool,
+          prompt: response.provenance.prompt,
+          ...(response.provenance.seed !== undefined
+            ? { seed: response.provenance.seed }
+            : {}),
+          sha256: response.provenance.sha256,
+        },
+      };
+    },
   };
 }
