@@ -160,31 +160,54 @@ describe("renderEvidenceVideo", () => {
 });
 
 describe("label placement", () => {
-  it("drops a name inside its box when the box touches the top edge", () => {
+  // Two labels overlap when their estimated footprints intersect. The estimate
+  // mirrors the builder's: length x size x 0.6 wide, size x 1.2 + 4 tall.
+  const drawn = (filter: string) =>
+    [...filter.matchAll(/drawtext=text='([^']*)':x=(\d+):y=(-?\d+):fontsize=(\d+)/g)].map(
+      (match) => ({
+        text: match[1] ?? "",
+        x: Number(match[2]),
+        top: Number(match[3]),
+        width: (match[1] ?? "").length * Number(match[4]) * 0.6,
+        height: Math.round(Number(match[4]) * 1.2) + 4,
+      }),
+    );
+  const overlaps = (filter: string): string[] => {
+    const items = drawn(filter);
+    const clashes: string[] = [];
+    for (let i = 0; i < items.length; i += 1)
+      for (let j = i + 1; j < items.length; j += 1) {
+        const a = items[i];
+        const b = items[j];
+        if (!a || !b) continue;
+        if (
+          a.top < b.top + b.height &&
+          b.top < a.top + a.height &&
+          a.x < b.x + b.width &&
+          b.x < a.x + a.width
+        )
+          clashes.push(`${a.text} / ${b.text}`);
+      }
+    return clashes;
+  };
+
+  it("keeps a name above its box when there is room", () => {
     const filter = buildEvidenceOverlayFilter([
       {
-        trackId: "t-top",
+        trackId: "t-mid",
         kind: "bbox",
-        label: "global-residual",
-        frames: [{ frame: 0, bounds: [532, 0, 516, 870] }],
-      },
-      {
-        trackId: "t-near",
-        kind: "bbox",
-        label: "ui-surface-05",
-        frames: [{ frame: 0, bounds: [557, 5, 211, 159] }],
+        label: "ui-surface-04",
+        frames: [{ frame: 0, bounds: [835, 140, 170, 175] }],
       },
     ]);
-    // Neither name may land on y=0 -- that is where they used to collide.
-    expect(filter).toContain("text='global-residual':x=532:y=26");
-    expect(filter).toContain("text='ui-surface-05':x=557:y=31");
-    expect(filter).not.toContain(":y=0:fontsize=20");
+    expect(filter).toContain("text='ui-surface-04':x=835:y=116");
   });
 
-  it("keeps a box that starts above the frame from stacking on one below", () => {
-    // Inverting the letterbox fit puts the content-window box's top at about
-    // -24 on a pillarboxed source. Measuring room above from -24 put its name
-    // two pixels from the top edge, where the first card's name already sat.
+  it("gives every label sharing a frame a row of its own", () => {
+    // Owners nest -- the content window contains every card -- so their names
+    // want the same corner, and inverting the letterbox fit puts the content
+    // window's own top above the frame, near -24. Moving one out of another's
+    // way used to land it on a third: the window's name on a card's caption.
     const filter = buildEvidenceOverlayFilter([
       {
         trackId: "t-window",
@@ -198,20 +221,50 @@ describe("label placement", () => {
         label: "ui-surface-01",
         frames: [{ frame: 0, bounds: [557, 25, 212, 228] }],
       },
-    ]);
-    expect(filter).toContain("text='global-residual':x=532:y=26");
-    expect(filter).toContain("text='ui-surface-01':x=557:y=1");
-  });
-
-  it("keeps a name above its box when there is room", () => {
-    const filter = buildEvidenceOverlayFilter([
       {
-        trackId: "t-mid",
-        kind: "bbox",
-        label: "ui-surface-04",
-        frames: [{ frame: 0, bounds: [835, 140, 170, 175] }],
+        trackId: "t-effect",
+        kind: "effect",
+        label: "rim+bloom+defocus",
+        frames: [{ frame: 0, bounds: [557, 25, 212, 228] }],
       },
     ]);
-    expect(filter).toContain("text='ui-surface-04':x=835:y=116");
+    expect(overlaps(filter)).toEqual([]);
+    for (const item of drawn(filter)) expect(item.top).toBeGreaterThanOrEqual(0);
+  });
+
+  it("lets labels far apart across the frame share a row", () => {
+    const filter = buildEvidenceOverlayFilter([
+      {
+        trackId: "t-left",
+        kind: "bbox",
+        label: "ui-surface-00",
+        frames: [{ frame: 0, bounds: [0, 200, 120, 120] }],
+      },
+      {
+        trackId: "t-right",
+        kind: "bbox",
+        label: "ui-surface-01",
+        frames: [{ frame: 0, bounds: [900, 200, 120, 120] }],
+      },
+    ]);
+    expect(new Set(drawn(filter).map((item) => item.top)).size).toBe(1);
+  });
+
+  it("does not let one frame's labels move another frame's", () => {
+    const filter = buildEvidenceOverlayFilter([
+      {
+        trackId: "t-a",
+        kind: "bbox",
+        label: "ui-surface-00",
+        frames: [{ frame: 0, bounds: [100, 200, 120, 120] }],
+      },
+      {
+        trackId: "t-b",
+        kind: "bbox",
+        label: "ui-surface-01",
+        frames: [{ frame: 1, bounds: [100, 200, 120, 120] }],
+      },
+    ]);
+    expect(drawn(filter).map((item) => item.top)).toEqual([176, 176]);
   });
 });

@@ -67,6 +67,20 @@ export const buildEvidenceOverlayFilter = (
         maxClauses: MAX_OVERLAY_CLAUSES,
       }),
     );
+  // Labels are collected rather than drawn as they are met, because where one
+  // can go depends on the others sharing its frame. Owners nest -- the content
+  // window contains every card -- so their labels want the same corner, and
+  // moving one out of another's way only lands it on a third.
+  type Label = Readonly<{
+    frame: number;
+    x: number;
+    top: number;
+    size: number;
+    text: string;
+    color: string;
+    boxed: boolean;
+  }>;
+  const labels: Label[] = [];
   for (const track of drawn) {
     const color = COLOR_BY_KIND[track.kind];
     for (const point of track.frames) {
@@ -76,9 +90,15 @@ export const buildEvidenceOverlayFilter = (
         clauses.push(
           `drawbox=x=${x}:y=${y}:w=${w}:h=${h}:color=${color}@0.8:thickness=3:${enable}`,
         );
-        clauses.push(
-          `drawtext=text='${escapeDrawtext(track.label)}':x=${x}:y=${nameLabelY(y)}:fontsize=20:fontcolor=${color}:box=1:boxcolor=black@0.5:${enable}`,
-        );
+        labels.push({
+          frame: point.frame,
+          x,
+          top: nameLabelY(y),
+          size: 20,
+          text: track.label,
+          color,
+          boxed: true,
+        });
       } else if (track.kind === "trajectory" && point.point) {
         const [x, y] = point.point;
         clauses.push(
@@ -91,9 +111,15 @@ export const buildEvidenceOverlayFilter = (
         );
       } else if (track.kind === "effect" && point.bounds) {
         const [x, y] = point.bounds;
-        clauses.push(
-          `drawtext=text='${escapeDrawtext(track.label)}':x=${x}:y=${y + 4}:fontsize=16:fontcolor=${color}:${enable}`,
-        );
+        labels.push({
+          frame: point.frame,
+          x,
+          top: y + 4,
+          size: 16,
+          text: track.label,
+          color,
+          boxed: false,
+        });
       } else if (track.kind === "audio-anchor") {
         clauses.push(
           `drawbox=x=0:y=ih-12:w=iw:h=12:color=${color}@0.7:thickness=fill:${enable}`,
@@ -101,7 +127,65 @@ export const buildEvidenceOverlayFilter = (
       }
     }
   }
+  for (const clause of placedLabels(labels)) clauses.push(clause);
   return clauses.join(",");
+};
+
+// drawtext gives back no measurement, so a label's footprint is estimated from
+// its own length at its own size; the estimate only has to be good enough to
+// tell "these two share a row" from "these two do not".
+const labelWidth = (text: string, size: number): number => text.length * size * 0.6;
+const labelHeight = (size: number): number => Math.round(size * 1.2) + 4;
+
+const placedLabels = (
+  labels: readonly Readonly<{
+    frame: number;
+    x: number;
+    top: number;
+    size: number;
+    text: string;
+    color: string;
+    boxed: boolean;
+  }>[],
+): readonly string[] => {
+  const byFrame = new Map<number, (typeof labels)[number][]>();
+  for (const label of labels) {
+    const list = byFrame.get(label.frame);
+    if (list) list.push(label);
+    else byFrame.set(label.frame, [label]);
+  }
+  const clauses: string[] = [];
+  for (const frame of [...byFrame.keys()].sort((a, b) => a - b)) {
+    const placed: Array<{ x: number; top: number; width: number; height: number }> = [];
+    const queue = [...(byFrame.get(frame) ?? [])].sort(
+      (left, right) => left.top - right.top || left.x - right.x,
+    );
+    for (const label of queue) {
+      const width = labelWidth(label.text, label.size);
+      const height = labelHeight(label.size);
+      let top = label.top;
+      // Push down past anything already sitting where this wants to be, and
+      // only past those it would actually touch -- two labels far apart across
+      // the frame share a row without ever meeting.
+      for (;;) {
+        const clash = placed.find(
+          (other) =>
+            top < other.top + other.height &&
+            other.top < top + height &&
+            label.x < other.x + other.width &&
+            other.x < label.x + width,
+        );
+        if (!clash) break;
+        top = clash.top + clash.height;
+      }
+      placed.push({ x: label.x, top, width, height });
+      const box = label.boxed ? "box=1:boxcolor=black@0.5:" : "";
+      clauses.push(
+        `drawtext=text='${escapeDrawtext(label.text)}':x=${label.x}:y=${top}:fontsize=${label.size}:fontcolor=${label.color}:${box}${enableAtFrame(frame)}`,
+      );
+    }
+  }
+  return clauses;
 };
 
 export type RenderEvidenceVideoInput = Readonly<{
