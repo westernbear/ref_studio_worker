@@ -4,6 +4,20 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
 import { CompilerOrchestrator } from "./compiler-orchestrator.js";
+import {
+  SceneSpecSchema,
+  sha256Hex,
+  type SceneSpec,
+} from "./contracts/index.js";
+import { renderGeneratedDelivery } from "./gen-render-delivery.js";
+import type { MaterialProvider } from "./material-provider.js";
+import {
+  fileSha256,
+  MATERIAL_EXTENSIONS,
+  resolveSceneAssets,
+  SAFE_ASSET_ID,
+  type ResolvedSceneAsset,
+} from "./resolve-scene-assets.js";
 import { projectEvidenceTracks } from "./evidence/tracks.js";
 import { renderEvidenceVideo } from "./evidence/render-evidence-video.js";
 import { renderVfxLabelVideo } from "./evidence/vfx-labels.js";
@@ -44,6 +58,13 @@ const RenderPayload = {
   compilation: CompilationSchema,
   browserPassSpecDigest: z.string().regex(/^[a-f0-9]{64}$/u),
 } as const;
+// The generate track's two phases read the authored scene instead of the
+// measured evidence -- the API does not send the evidence bundle to either.
+const ScenePayload = {
+  spec: SceneSpecSchema,
+  specDigest: z.string().regex(/^[a-f0-9]{64}$/u),
+  attachmentIds: z.array(z.string().min(1)).max(20),
+} as const;
 const WorkflowPayload = z
   .discriminatedUnion("phase", [
     z.object({ ...CommonPayload, phase: z.literal("analyze") }).strict(),
@@ -73,6 +94,32 @@ const WorkflowPayload = z
         ...CommonPayload,
         ...RenderPayload,
         phase: z.literal("render"),
+      })
+      .strict(),
+    z
+      .object({ ...CommonPayload, ...ScenePayload, phase: z.literal("assets") })
+      .strict(),
+    z
+      .object({
+        ...CommonPayload,
+        ...ScenePayload,
+        phase: z.literal("gen-render"),
+        // What the `assets` phase already stored. Each is fetched back and
+        // re-hashed against the digest the API bound it to.
+        assets: z
+          .array(
+            z
+              .object({
+                assetId: z.string().min(1),
+                artifactId: z.string().min(1),
+                sha256: z.string().regex(/^[a-f0-9]{64}$/u),
+                contentType: z.enum(
+                  Object.keys(MATERIAL_EXTENSIONS) as [string, ...string[]],
+                ),
+              })
+              .strict(),
+          )
+          .max(64),
       })
       .strict(),
   ])
@@ -112,6 +159,10 @@ export type WorkflowPipelineDependencies = Readonly<{
     | "uploadPreviewLabeled"
     | "uploadEvidenceVideo"
     | "uploadSafetySample"
+    | "uploadGeneratedArtifact"
+    | "downloadAttachment"
+    | "downloadSceneAsset"
+    | "uploadSceneAsset"
   >;
   runCommand?: CommandRunner;
   compileEvidence?: (
@@ -122,6 +173,11 @@ export type WorkflowPipelineDependencies = Readonly<{
   ) => Promise<Record<string, unknown>>;
   renderEvidenceVideo?: typeof renderEvidenceVideo;
   renderVfxLabelVideo?: typeof renderVfxLabelVideo;
+  // The generate track. `materialProvider` is the one place a real
+  // provider is injected; left unset, resolve-scene-assets falls back to
+  // the fail-closed stub and any scene needing new material fails its job.
+  materialProvider?: MaterialProvider;
+  renderGenerated?: typeof renderGeneratedDelivery;
   workRoot?: string;
   renderDeadlineMs?: number;
 }>;
@@ -195,8 +251,9 @@ export const createWorkflowJobHandler = (
   const render = dependencies.renderDelivery ?? renderWorkflowDelivery;
   const renderEvidence =
     dependencies.renderEvidenceVideo ?? renderEvidenceVideo;
-  const renderLabels =
-    dependencies.renderVfxLabelVideo ?? renderVfxLabelVideo;
+  const renderLabels = dependencies.renderVfxLabelVideo ?? renderVfxLabelVideo;
+  const renderGenerated =
+    dependencies.renderGenerated ?? renderGeneratedDelivery;
   return async (job, signal) => {
     const payload = WorkflowPayload.parse(job.payload);
     const root = dependencies.workRoot ?? tmpdir();
@@ -212,7 +269,10 @@ export const createWorkflowJobHandler = (
       framesTotal: number | null = null,
     ): Promise<void> => {
       const update: WorkerProgress = {
-        phase: payload.phase === "render" ? "render" : "prepare",
+        phase:
+          payload.phase === "render" || payload.phase === "gen-render"
+            ? "render"
+            : "prepare",
         stage,
         fraction,
         framesProcessed,
@@ -233,6 +293,135 @@ export const createWorkflowJobHandler = (
       await dependencies.api.reportProgress(job.jobId, update, signal);
     };
     try {
+      // Neither generate-track phase reads the reference source, so both
+      // return before the download/normalize steps below.
+      if (payload.phase === "assets" || payload.phase === "gen-render") {
+        // The spec travelled as JSON; the digest the API bound this job to
+        // is the digest of the document it sent, so re-derive it rather
+        // than trusting the field beside it.
+        if (sha256Hex(payload.spec) !== payload.specDigest)
+          throw new Error("WORKER_SPEC_DIGEST_MISMATCH");
+      }
+      if (payload.phase === "assets") {
+        await progress("scene-assets", 0.2);
+        const resolved: readonly ResolvedSceneAsset[] =
+          await resolveSceneAssets(
+            {
+              spec: payload.spec,
+              attachmentIds: payload.attachmentIds,
+              workspace,
+              signal,
+            },
+            {
+              downloadAttachment: (attachmentId, destinationPath, transfer) =>
+                dependencies.api.downloadAttachment(
+                  job.jobId,
+                  attachmentId,
+                  destinationPath,
+                  transfer,
+                ),
+              ...(dependencies.materialProvider
+                ? { provider: dependencies.materialProvider }
+                : {}),
+            },
+          );
+        const assets = [];
+        for (const asset of resolved) {
+          const uploaded = await dependencies.api.uploadSceneAsset(
+            job.jobId,
+            asset.assetId,
+            asset.path,
+            asset.contentType,
+            signal,
+          );
+          assets.push({
+            assetId: asset.assetId,
+            artifactId: uploaded.artifactId,
+            sha256: asset.sha256,
+            provenance: asset.provenance,
+          });
+        }
+        await progress("scene-assets", 1);
+        return {
+          protocol: "rvs.worker.v1",
+          phase: "assets",
+          specDigest: payload.specDigest,
+          assets,
+        };
+      }
+      if (payload.phase === "gen-render") {
+        const spec: SceneSpec = payload.spec;
+        const frameCount = spec.canvas.frameCount;
+        await progress("scene-assets", 0.05, 0, frameCount);
+        const assetDirectory = join(workspace, "scene-assets");
+        await mkdir(assetDirectory, { recursive: true });
+        const assetPaths = new Map<string, string>();
+        for (const asset of payload.assets) {
+          if (!SAFE_ASSET_ID.test(asset.assetId))
+            throw new Error("WORKER_ASSET_ID_UNSAFE");
+          const destination = join(
+            assetDirectory,
+            `${asset.assetId}.${MATERIAL_EXTENSIONS[asset.contentType as keyof typeof MATERIAL_EXTENSIONS]}`,
+          );
+          await dependencies.api.downloadSceneAsset(
+            job.jobId,
+            asset.assetId,
+            destination,
+            signal,
+          );
+          // The API bound this artifact to this hash; bytes that do not
+          // match are not the asset this scene was resolved against.
+          if ((await fileSha256(destination)) !== asset.sha256)
+            throw new Error("WORKER_ASSET_DIGEST_MISMATCH");
+          assetPaths.set(asset.assetId, destination);
+        }
+        await progress("scene-render", 0.2, 0, frameCount);
+        const generatedDeadline = AbortSignal.timeout(
+          dependencies.renderDeadlineMs ?? 900_000,
+        );
+        const generatedSignal = AbortSignal.any([signal, generatedDeadline]);
+        try {
+          const report = await renderGenerated(
+            { spec, assetPaths, outPath: outputPath },
+            { runCommand: command },
+          );
+          await progress("upload", 0.95, frameCount, frameCount);
+          const artifact = await dependencies.api.uploadGeneratedArtifact(
+            job.jobId,
+            outputPath,
+            generatedSignal,
+          );
+          const safetySample = await dependencies.api.uploadSafetySample(
+            job.jobId,
+            report.safetySampleFramePath,
+            generatedSignal,
+          );
+          return {
+            protocol: "rvs.worker.v1",
+            phase: "gen-render",
+            artifactId: artifact.artifactId,
+            safetySampleArtifactId: safetySample.artifactId,
+            report: {
+              schema: report.schema,
+              jobId: job.jobId,
+              attemptId: job.attemptId,
+              specDigest: report.specDigest,
+              outputSha256: report.outputSha256,
+              outputBytes: report.outputBytes,
+              frameSha256: report.frameSha256,
+              runtime: report.runtime,
+              qc: report.qc,
+            },
+          };
+        } catch (error) {
+          if (signal.aborted)
+            throw signal.reason instanceof Error
+              ? signal.reason
+              : new Error("WORKER_JOB_CANCELLED");
+          if (generatedDeadline.aborted) throw new Error("RENDER_DEADLINE");
+          throw error;
+        }
+      }
       if (payload.phase === "compile") {
         await progress("scene-compile", 0.5);
         const compilation = compileEvidenceScene(

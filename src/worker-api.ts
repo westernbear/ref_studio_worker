@@ -78,6 +78,37 @@ export type WorkerApi = Readonly<{
     sourcePath: string,
     signal: AbortSignal,
   ): Promise<ArtifactUpload>;
+  // The generate track's film. A separate route from uploadArtifact so the
+  // API stages it under its own artifact kind.
+  uploadGeneratedArtifact(
+    jobId: string,
+    sourcePath: string,
+    signal: AbortSignal,
+  ): Promise<ArtifactUpload>;
+  // The generate track's three extra transfers. Brand attachments live in
+  // the API's memory, so the `assets` phase has no other way to read one;
+  // resolved assets are stored by the API so the `gen-render` phase need
+  // not run on the same worker, or the same disk, as the phase that
+  // produced them.
+  downloadAttachment(
+    jobId: string,
+    attachmentId: string,
+    destinationPath: string,
+    signal: AbortSignal,
+  ): Promise<{ readonly contentType: string }>;
+  downloadSceneAsset(
+    jobId: string,
+    assetId: string,
+    destinationPath: string,
+    signal: AbortSignal,
+  ): Promise<{ readonly contentType: string }>;
+  uploadSceneAsset(
+    jobId: string,
+    assetId: string,
+    sourcePath: string,
+    contentType: string,
+    signal: AbortSignal,
+  ): Promise<ArtifactUpload>;
 }>;
 export type Fetcher = (
   input: URL | RequestInfo,
@@ -240,19 +271,13 @@ export function createWorkerApi(
       );
     return lease;
   };
-  const upload = async (
+  const uploadTo = async (
+    path: string,
     jobId: string,
-    kind:
-      | "artifact"
-      | "preview-artifact"
-      | "preview-labeled-artifact"
-      | "evidence-video-artifact"
-      | "safety-sample-artifact",
     sourcePath: string,
     signal: AbortSignal,
-    contentType: string = "video/mp4",
+    contentType: string,
   ): Promise<ArtifactUpload> => {
-    const path = `${prefix}/jobs/${encodeURIComponent(jobId)}/${kind}`;
     const source = await openAsBlob(sourcePath, { type: contentType });
     const init = {
       method: "POST",
@@ -277,6 +302,91 @@ export function createWorkerApi(
       result.body,
       ArtifactUploadResponse,
     );
+  };
+  const upload = (
+    jobId: string,
+    kind:
+      | "artifact"
+      | "generated-artifact"
+      | "preview-artifact"
+      | "preview-labeled-artifact"
+      | "evidence-video-artifact"
+      | "safety-sample-artifact",
+    sourcePath: string,
+    signal: AbortSignal,
+    contentType: string = "video/mp4",
+  ): Promise<ArtifactUpload> =>
+    uploadTo(
+      `${prefix}/jobs/${encodeURIComponent(jobId)}/${kind}`,
+      jobId,
+      sourcePath,
+      signal,
+      contentType,
+    );
+  // Streams a lease-fenced file straight to disk and reports what the API
+  // said it is. Deliberately not downloadSource: there is no expected hash
+  // to check here at fetch time -- the caller checks the digest it was
+  // given by its own payload, which is the value the API bound the artifact
+  // to, not one this response could restate.
+  const downloadFile = async (
+    path: string,
+    jobId: string,
+    destinationPath: string,
+    signal: AbortSignal,
+  ): Promise<{ readonly contentType: string }> => {
+    let streaming = false;
+    let contentType = "";
+    try {
+      await readResponse<void>(
+        path,
+        { method: "GET" },
+        config.mediaRequestTimeoutMs,
+        signal,
+        async (response, requestSignal) => {
+          if (!response.ok) {
+            const responseBody = await response.text();
+            throw new WorkerApiError(
+              path,
+              response.status,
+              `worker API request failed (${response.status}) for ${path}: ${preview(responseBody)}`,
+              errorCode(
+                responseBody,
+                response.headers.get("content-type") ?? "",
+              ),
+            );
+          }
+          contentType =
+            (response.headers.get("content-type") ?? "")
+              .split(";", 1)[0]
+              ?.trim()
+              .toLowerCase() ?? "";
+          if (!response.body || !contentType)
+            throw new WorkerApiError(
+              path,
+              response.status,
+              `worker API returned no readable body for ${path}`,
+            );
+          streaming = true;
+          await pipeline(
+            response.body,
+            createWriteStream(destinationPath, { mode: 0o600 }),
+            { signal: requestSignal },
+          );
+          if ((await stat(destinationPath)).size === 0)
+            throw new WorkerApiError(
+              path,
+              response.status,
+              `worker API returned an empty body for ${path}`,
+            );
+        },
+        sessionToken ?? "",
+        leaseFor(jobId),
+      );
+    } catch (error) {
+      if (streaming) await rm(destinationPath, { force: true });
+      throw error;
+    }
+    return { contentType };
   };
   return {
     register: async () => {
@@ -430,5 +540,29 @@ export function createWorkerApi(
       upload(jobId, "evidence-video-artifact", sourcePath, signal),
     uploadSafetySample: (jobId, sourcePath, signal) =>
       upload(jobId, "safety-sample-artifact", sourcePath, signal, "image/png"),
+    uploadGeneratedArtifact: (jobId, sourcePath, signal) =>
+      upload(jobId, "generated-artifact", sourcePath, signal),
+    downloadAttachment: (jobId, attachmentId, destinationPath, signal) =>
+      downloadFile(
+        `${prefix}/jobs/${encodeURIComponent(jobId)}/attachments/${encodeURIComponent(attachmentId)}`,
+        jobId,
+        destinationPath,
+        signal,
+      ),
+    downloadSceneAsset: (jobId, assetId, destinationPath, signal) =>
+      downloadFile(
+        `${prefix}/jobs/${encodeURIComponent(jobId)}/asset-artifact/${encodeURIComponent(assetId)}`,
+        jobId,
+        destinationPath,
+        signal,
+      ),
+    uploadSceneAsset: (jobId, assetId, sourcePath, contentType, signal) =>
+      uploadTo(
+        `${prefix}/jobs/${encodeURIComponent(jobId)}/asset-artifact/${encodeURIComponent(assetId)}`,
+        jobId,
+        sourcePath,
+        signal,
+        contentType,
+      ),
   };
 }

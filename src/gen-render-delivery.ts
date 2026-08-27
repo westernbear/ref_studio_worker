@@ -23,8 +23,25 @@ export type GeneratedRenderReport = Readonly<{
   schema: "rvs.gen-render-report.v1";
   specDigest: string;
   outputSha256: string;
+  outputBytes: number;
   frameSha256: readonly string[];
+  // What the browser that drew these frames actually reported about itself.
+  // The API binds `renderer` against the worker's registered preflight and
+  // requires networkPolicy "external-blocked" -- material generation happens
+  // in the `assets` phase, and by the time frames are drawn the browser is
+  // sealed off exactly as it is for a restore render.
+  runtime: Readonly<{
+    chromiumVersion: string;
+    renderer: string;
+    fontReady: boolean;
+    webgl2: boolean;
+    networkPolicy: string;
+    repeatedFrameByteIdentity: boolean;
+  }>;
   qc: Readonly<Record<string, unknown>>;
+  // A local worker-filesystem path, for the content-safety sample upload --
+  // never sent to the API, which keeps its report schema strict.
+  safetySampleFramePath: string;
 }>;
 
 const fraction = (value: string): number => {
@@ -158,7 +175,9 @@ export async function renderGeneratedDelivery(
     workspace,
     framesDirectory,
     chromePath:
-      dependencies.chromePath ?? process.env.CHROME_PATH ?? "/opt/chrome/chrome",
+      dependencies.chromePath ??
+      process.env.CHROME_PATH ??
+      "/opt/chrome/chrome",
     fontPath,
     frames: renderedFrames,
     signal,
@@ -243,15 +262,33 @@ export async function renderGeneratedDelivery(
   const qc = validateGeneratedDelivery(probe.stdout, canvas);
 
   const outputHash = createHash("sha256");
-  for await (const chunk of createReadStream(input.outPath))
+  let outputBytes = 0;
+  for await (const chunk of createReadStream(input.outPath)) {
     outputHash.update(chunk);
+    outputBytes += (chunk as Buffer).byteLength;
+  }
 
   return {
     schema: "rvs.gen-render-report.v1",
     specDigest: compilation.digest,
     outputSha256: outputHash.digest("hex"),
+    outputBytes,
     frameSha256: captureReport.frameSha256,
+    runtime: {
+      chromiumVersion: captureReport.chromiumVersion,
+      renderer: captureReport.renderer,
+      fontReady: captureReport.fontReady,
+      webgl2: captureReport.webgl2,
+      networkPolicy: captureReport.networkPolicy,
+      repeatedFrameByteIdentity: captureReport.repeatedFrameByteIdentity,
+    },
     qc,
+    // The middle frame, same choice the restore delivery makes -- the most
+    // representative single frame of the film.
+    safetySampleFramePath: join(
+      framesDirectory,
+      `frame-${String(Math.floor(canvas.frameCount / 2)).padStart(6, "0")}.png`,
+    ),
   };
 }
 
