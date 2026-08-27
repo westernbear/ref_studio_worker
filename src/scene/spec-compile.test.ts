@@ -1,4 +1,4 @@
-import { fixtureSpec, type SceneSpec } from "@rvs/contracts";
+import { fixtureSpec, sha256Hex, type SceneSpec } from "@rvs/contracts";
 import { describe, expect, it } from "vitest";
 import { compileSceneSpec } from "./spec-compile.js";
 
@@ -12,6 +12,20 @@ const withKeyframe = (
   const next = clone(spec);
   const keyframe = next.beats[0]!.elements[0]!.keyframes[1]!;
   Object.assign(keyframe, patch);
+  return next;
+};
+
+// compileSceneSpec is a pure expansion, not a gate -- validateSceneSpec (in
+// @rvs/contracts) is what forbids beats leaving a gap (C1/C2's tiling
+// rule). A spec can still reach the compiler with a gap by any path that
+// skips validation, so the compiler itself must be proven to leave those
+// frames undrawn rather than, say, holding the previous beat's last frame.
+const withGap = (spec: SceneSpec): SceneSpec => {
+  const next = clone(spec);
+  // Shrink beat-hero to end 50 frames early, leaving frames [350, 400) with
+  // no beat covering them -- beat-close still starts at 400, so this is a
+  // gap, not an overlap or an out-of-range beat.
+  next.beats[1] = { ...next.beats[1]!, endFrame: 350 };
   return next;
 };
 
@@ -35,8 +49,24 @@ describe("compileSceneSpec", () => {
   });
 
   it("draws nothing outside a beat", () => {
-    const gap = compileSceneSpec(fixtureSpec).frames[599];
-    expect(gap?.draws.every((d) => d.opacity >= 0)).toBe(true);
+    const compiled = compileSceneSpec(withGap(fixtureSpec));
+    // Frames inside the shrunk beat-hero (still covers up to 349) keep
+    // their draw; frames in the gap itself (350-399, before beat-close
+    // starts at 400) must have no draws at all.
+    expect(compiled.frames[349]?.draws.length).toBeGreaterThan(0);
+    expect(compiled.frames[375]?.draws).toHaveLength(0);
+    expect(compiled.frames[399]?.draws).toHaveLength(0);
+    expect(compiled.frames[400]?.draws.length).toBeGreaterThan(0);
+  });
+
+  // I3: apps/api/src/workers.ts stores job.sceneSpecDigest using
+  // @rvs/contracts's sha256Hex (canonical-json based); this compiler
+  // reports its own digest with a locally-duplicated canonicalJson (see
+  // this file's comment on SpecCompilation). Both must agree for the same
+  // spec, or a stored digest could never match a rendered one once the
+  // generate-render batch compares them.
+  it("agrees with @rvs/contracts's shared canonical-json digest for the same spec", () => {
+    expect(compileSceneSpec(fixtureSpec).digest).toBe(sha256Hex(fixtureSpec));
   });
 
   it("changes digest when a keyframe moves one frame", () => {

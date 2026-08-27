@@ -2,7 +2,12 @@ import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { CANVAS, DELIVERY_FPS, type SceneSpec } from "@rvs/contracts";
+import {
+  CANVAS,
+  DELIVERY_FPS,
+  validateSceneSpec,
+  type SceneSpec,
+} from "@rvs/contracts";
 import { z } from "zod";
 import {
   captureBrowserFrames,
@@ -107,6 +112,19 @@ export async function renderGeneratedDelivery(
   dependencies: RenderDeliveryDependencies = {},
 ): Promise<GeneratedRenderReport> {
   if (!isDeclaredCanvas(input.spec.canvas)) throw new Error("CANVAS_MISMATCH");
+
+  // Fail-closed gate (C2.3): a SceneSpec can reach this function by any
+  // path, not only the one authorScene() already validates after its own
+  // canvas override -- so this is checked again here, right before the
+  // spec is trusted to compile into frames. Resolvable asset ids are the
+  // ones this caller actually knows how to turn into bytes: whatever
+  // assetPaths already resolved to a real file, plus any asset the model
+  // declared as "generated" (gated separately by validateSceneSpec's own
+  // provenance check, not by path resolution).
+  const resolvableAssetIds = new Set<string>(input.assetPaths.keys());
+  for (const asset of input.spec.assets)
+    if (asset.origin === "generated") resolvableAssetIds.add(asset.assetId);
+  validateSceneSpec(input.spec, resolvableAssetIds);
 
   const command = dependencies.runCommand ?? runCommand;
   const capture = dependencies.captureFrames ?? captureBrowserFrames;

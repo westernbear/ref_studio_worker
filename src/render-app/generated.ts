@@ -66,6 +66,14 @@ const drawMarkup = (draw: FramePlan["draws"][number]): string => {
   const attributes =
     `data-element-id="${escapeXml(draw.elementId)}"${assetAttribute}${filterAttribute(draw.effects)} ` +
     `x="${draw.box.x}" y="${draw.box.y}" width="${draw.box.width}" height="${draw.box.height}" opacity="${draw.opacity}"`;
+  // ponytail: this <rect> is a placeholder, not a finished owner draw --
+  // it never resolves draw.assetRef to actual image/video pixels, and
+  // carries no fill/background from the spec's palette (dropped upstream,
+  // see spec-compile.ts's matching comment). An asset-backed element and a
+  // bare shape currently render identically: an unfilled rect. Image
+  // compositing and palette-aware fills are the next batch's work
+  // (whole-branch review finding I5) -- this fallback is deliberately not
+  // "done".
   return draw.content !== undefined
     ? `<text ${attributes} font-size="${Math.max(8, Math.round(draw.box.height * 0.8))}">${escapeXml(draw.content)}</text>`
     : `<rect ${attributes} />`;

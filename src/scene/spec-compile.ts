@@ -28,6 +28,15 @@ export type SpecCompilation = {
     readonly shader: string | null;
   }[];
 };
+// ponytail: SceneSpec.palette, and each beat's .shot and the top-level
+// .mode, are authored, schema-validated, and folded into the spec digest,
+// but nothing below this line reads them -- FramePlan carries only
+// per-element box/opacity/effects. Image/video asset compositing and
+// palette-aware rendering are the next batch's work (whole-branch review
+// finding I5); until then a compiled scene draws default-white shapes and
+// black text regardless of what palette/shot/mode the author chose. This
+// is a deliberate, narrow scope boundary, not an oversight -- see the
+// matching comment at generated.ts's <rect> fallback.
 
 // Copied from apps/worker/src/scene/compile.ts (canonicalJson) rather than
 // imported -- see ruling 3: compile.ts, the restore track's compiler, stays
