@@ -78,7 +78,7 @@ export const fixtureSpec: SceneSpec = {
             { frame: 200, opacity: 1, scale: 1, ease: "linear" },
             { frame: 399, opacity: 1, scale: 1.1, ease: "easeIn" },
           ],
-          effects: ["drop-shadow"],
+          effects: [],
         },
       ],
     },

@@ -161,10 +161,11 @@ export async function renderGeneratedDelivery(
       const path = input.assetPaths.get(asset.assetId);
       return path ? [{ family: asset.assetId, path }] : [];
     });
-  const app = createGeneratedRenderApp(compilation, [
-    { family: "Wanted Sans", path: fontPath },
-    ...fontAssets,
-  ]);
+  const app = createGeneratedRenderApp(
+    compilation,
+    [{ family: "Wanted Sans", path: fontPath }, ...fontAssets],
+    input.spec.assets,
+  );
   const renderedFrames = compilation.frames.map((plan) =>
     app.renderFrame(plan.frame),
   );

@@ -23,8 +23,24 @@ import { z } from "zod";
 // test is the gate). `blur` and `glow` were tried and dropped -- both
 // compile to feGaussianBlur, which is not bit-reproducible across
 // independent Chromium process launches under --use-angle=swiftshader.
-// `drop-shadow` (native feDropShadow) was clean across every trial.
-export const SPEC_EFFECTS = ["drop-shadow"] as const;
+//
+// `drop-shadow` (native feDropShadow) was clean across every trial for as
+// long as the only thing on screen was the filtered element itself. Once
+// the renderer started painting a real background under it (generated.ts,
+// I5 batch -- a scene that asks for pure black must not render white) and
+// giving it a real, non-default fill from the palette instead of the
+// capture page's stylesheet white, feDropShadow's shadow layer stopped
+// being bit-reproducible: a colour-filled, drop-shadowed element composited
+// over an opaque backdrop produced two distinct outputs across repeated
+// renders of byte-identical markup within a single Chromium session, let
+// alone across independent launches (apps/worker's
+// gen-render-delivery.determinism test caught it; isolating the filtered
+// element in its own stacking context via `isolation: isolate` or a nested
+// `<svg>` did not help). A background is mandatory now, and a palette-aware
+// fill is the whole point of this renderer, so neither one is the thing
+// that "does not go in" -- drop-shadow is. SPEC_EFFECTS is empty until an
+// effect is found that survives being drawn over a painted background.
+export const SPEC_EFFECTS = [] as const;
 
 export type Ease = "linear" | "easeIn" | "easeOut" | "easeInOut";
 export type Keyframe = {
