@@ -186,6 +186,14 @@ export type WorkflowPipelineDependencies = Readonly<{
   renderGenerated?: typeof renderGeneratedDelivery;
   workRoot?: string;
   renderDeadlineMs?: number;
+  // Material generation gets its own deadline, separate from the render
+  // one: a self-hosted inference service is a different failure mode from
+  // a slow browser. Without it the assets phase had no bound at all --
+  // the lease is only 90s but the heartbeat keeps renewing it, so a stuck
+  // or swapping generation call held the job for as long as the worker
+  // process stayed alive. Generous by default because a quantised model
+  // on a small card offloads to system RAM and takes minutes per asset.
+  materialDeadlineMs?: number;
 }>;
 
 // browserPassSpec is typed as passthrough, so read the shader list defensively
@@ -310,13 +318,17 @@ export const createWorkflowJobHandler = (
       }
       if (payload.phase === "assets") {
         await progress("scene-assets", 0.2);
+        const materialDeadline = AbortSignal.timeout(
+          dependencies.materialDeadlineMs ?? 1_800_000,
+        );
+        const materialSignal = AbortSignal.any([signal, materialDeadline]);
         const resolved: readonly ResolvedSceneAsset[] =
           await resolveSceneAssets(
             {
               spec: payload.spec,
               attachmentIds: payload.attachmentIds,
               workspace,
-              signal,
+              signal: materialSignal,
             },
             {
               downloadAttachment: (attachmentId, destinationPath, transfer) =>

@@ -206,18 +206,21 @@ describe("the assets worker phase", () => {
 
     const result = await handler(job("assets", attachmentSpec), signal);
 
+    // Not the job's own signal: the assets phase composes it with its own
+    // material deadline (see materialDeadlineMs) and passes the composed
+    // one down, so every call in this phase aborts when either fires.
     expect(fake.downloadAttachment).toHaveBeenCalledWith(
       "job-a",
       "att_1",
       expect.stringContaining("logo"),
-      signal,
+      expect.any(AbortSignal),
     );
     expect(fake.uploadSceneAsset).toHaveBeenCalledWith(
       "job-a",
       "logo",
       expect.stringMatching(/logo\.png$/u),
       "image/png",
-      signal,
+      expect.any(AbortSignal),
     );
     expect(result).toMatchObject({
       phase: "assets",
@@ -314,6 +317,51 @@ describe("the assets worker phase", () => {
         },
       ],
     });
+  });
+
+  it("gives up on a material provider that never returns", async () => {
+    // The lease is 90s but the heartbeat keeps renewing it, so without a
+    // deadline of its own a stuck or swapping inference service held the
+    // job for as long as the worker process lived. Quantised weights on a
+    // small card make that a realistic failure, not a theoretical one.
+    const fake = api();
+    let aborted = false;
+    const provider: MaterialProvider = {
+      tool: "hanging-provider@1",
+      generate: (_request, signal) =>
+        new Promise((_resolve, reject) => {
+          signal.addEventListener("abort", () => {
+            aborted = true;
+            reject(new Error("MATERIAL_ABORTED"));
+          });
+        }),
+    };
+    const handler = createWorkflowJobHandler({
+      api: fake,
+      materialProvider: provider,
+      materialDeadlineMs: 20,
+    } as unknown as WorkflowPipelineDependencies);
+    const generated = spec(
+      [
+        {
+          assetId: "backdrop",
+          kind: "image",
+          origin: "generated",
+          ref: "generated://backdrop",
+          provenance: {
+            tool: "author-declared",
+            prompt: "a dark studio backdrop",
+            seed: 7,
+            sha256: "0".repeat(64),
+          },
+        },
+      ],
+      ["backdrop"],
+    );
+
+    await expect(handler(job("assets", generated), signal)).rejects.toThrow();
+    expect(aborted).toBe(true);
+    expect(fake.uploadSceneAsset).not.toHaveBeenCalled();
   });
 
   it("builds the real provider through the factory, once per job, with that job's id", async () => {
