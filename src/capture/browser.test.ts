@@ -120,3 +120,20 @@ describe("renderPage canvas sizing", () => {
     });
   }
 });
+
+describe("renderPage text weight", () => {
+  it("makes font-weight a default an element's own attribute can override, not a constant", () => {
+    const page = renderPage("/tmp/font.ttf", [], CANVAS["9:16"]);
+
+    // The base #scene text rule must no longer hardcode a weight -- that is
+    // what made every piece of text in every generated film the same
+    // weight despite Wanted Sans being a full variable-weight font.
+    expect(page).not.toMatch(/#scene text \{[^}]*font-weight/);
+    // A default-only rule, guarded the same way the existing fill default
+    // is (:where(:not([...]))), so an element carrying its own
+    // font-weight attribute wins over it.
+    expect(page).toContain(
+      "#scene text:where(:not([font-weight])) { font-weight: 700; }",
+    );
+  });
+});

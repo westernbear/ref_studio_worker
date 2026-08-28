@@ -240,7 +240,17 @@ export const renderPage = (
        global-residual rule below still wins, while a measured fill="" from
        the renderer is no longer overridden by the stylesheet -- a CSS fill
        beats an SVG presentation attribute. */
-    #scene text { font-family: RvsLocal, sans-serif; font-weight: 700; dominant-baseline: hanging; }
+    #scene text { font-family: RvsLocal, sans-serif; dominant-baseline: hanging; }
+    /* Weight is a default, not a constant: an element that names its own
+       font-weight wins over this -- the bundled Wanted Sans is a variable
+       font spanning the full weight axis, so a scene that wants hierarchy
+       through weight contrast (not just size) needs a way to ask for it.
+       No render app emits a font-weight attribute today -- doing that
+       would need a schema field to author the value from, which is out of
+       scope here -- so every scene still renders at 700, unchanged; this
+       only removes the stylesheet as the reason a scene *couldn't* vary
+       it. */
+    #scene text:where(:not([font-weight])) { font-weight: 700; }
     #scene text:where(:not([fill])) { fill: #fff; }
     #scene rect { stroke-width: 3; rx: 28; }
     #scene rect:where(:not([stroke])) { stroke: rgba(255, 255, 255, .32); }
