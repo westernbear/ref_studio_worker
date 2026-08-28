@@ -125,6 +125,95 @@ describe("createGeneratedRenderApp", () => {
     expect(markup.slice(tagStart, tagStart + 6)).toBe("<image");
   });
 
+  it("gives a shape with no colour-asset override a visible, palette-derived fill", () => {
+    const spec: SceneSpec = {
+      ...fixtureSpec,
+      beats: [
+        {
+          ...fixtureSpec.beats[0]!,
+          elements: [
+            ...fixtureSpec.beats[0]!.elements,
+            {
+              elementId: "bare-shape",
+              kind: "shape",
+              box: { x: 10, y: 10, width: 50, height: 50 },
+              keyframes: [],
+              effects: [],
+            },
+          ],
+        },
+        ...fixtureSpec.beats.slice(1),
+      ],
+    };
+    const app = createGeneratedRenderApp(compileSceneSpec(spec), []);
+    const markup = app.renderFrame(0).markup;
+    const shapeIndex = markup.indexOf('data-element-id="bare-shape"');
+    expect(shapeIndex).toBeGreaterThan(-1);
+    const tag = markup.slice(markup.lastIndexOf("<", shapeIndex), markup.indexOf("/>", shapeIndex) + 2);
+    expect(tag).toContain(`fill="${fixtureSpec.palette.cool}"`);
+  });
+
+  // "glow" is not in SPEC_EFFECTS -- it was tried as geometry (a scaled-up,
+  // lower-opacity copy) and dropped a second time: even pixel-snapped and
+  // cut to a single layer, it still failed the determinism gate
+  // intermittently under concurrent CPU load (see SPEC_EFFECTS's own
+  // comment in packages/contracts/src/scene-spec.ts and
+  // gen-render-delivery.determinism.test.ts's run log). An element that
+  // names "glow" therefore draws no extra layer for it -- same as any
+  // other effect name outside the allowlist.
+  it("draws no extra layer for an effect name outside the allowlist (e.g. glow)", () => {
+    const spec = withElement(fixtureSpec, { effects: ["glow"] });
+    const app = createGeneratedRenderApp(compileSceneSpec(spec), []);
+    const markup = app.renderFrame(0).markup;
+    expect(markup).not.toContain("filter=");
+    expect(markup).not.toContain("<filter");
+    expect(markup).not.toContain("headline__effect-glow");
+  });
+
+  it("draws a drop shadow as one offset, darkened copy beneath the element", () => {
+    const spec = withElement(fixtureSpec, { effects: ["drop-shadow"] });
+    const app = createGeneratedRenderApp(compileSceneSpec(spec), []);
+    const markup = app.renderFrame(0).markup;
+    expect(markup).not.toContain("filter=");
+    const shadowIndex = markup.indexOf(
+      'data-element-id="headline__effect-drop-shadow"',
+    );
+    expect(shadowIndex).toBeGreaterThan(-1);
+    expect(markup.indexOf('data-element-id="headline__effect-drop-shadow"')).toBeLessThan(
+      markup.indexOf('data-element-id="headline"'),
+    );
+    // The shadow's colour comes from the palette's background, not a
+    // hardcoded black.
+    expect(markup.slice(shadowIndex, shadowIndex + 200)).toContain(
+      `fill="${fixtureSpec.palette.background}"`,
+    );
+  });
+
+  it("skips drop-shadow for an image-kind element (no geometry for a silhouette)", () => {
+    const assetPaths = new Map([["hero-shot", "/tmp/hero-shot.png"]]);
+    const spec: SceneSpec = {
+      ...fixtureSpec,
+      beats: [
+        fixtureSpec.beats[0]!,
+        {
+          ...fixtureSpec.beats[1]!,
+          elements: [
+            { ...fixtureSpec.beats[1]!.elements[0]!, effects: ["drop-shadow"] },
+          ],
+        },
+        ...fixtureSpec.beats.slice(2),
+      ],
+    };
+    const app = createGeneratedRenderApp(
+      compileSceneSpec(spec),
+      [],
+      spec.assets,
+      assetPaths,
+    );
+    const markup = app.renderFrame(250).markup;
+    expect(markup).not.toContain("hero-image__effect");
+  });
+
   it("refuses to resolve an image asset to a remote-looking path", () => {
     const assetPaths = new Map([
       ["hero-shot", "https://cdn.example.com/hero.png"],

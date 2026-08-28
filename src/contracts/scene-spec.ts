@@ -20,9 +20,10 @@ import { z } from "zod";
 // The bar for entry is stricter than "expressible as SVG": two independent
 // real-Chromium renders of a fixture using the effect must produce
 // identical frame hashes (apps/worker's gen-render-delivery.determinism
-// test is the gate). `blur` and `glow` were tried and dropped -- both
-// compile to feGaussianBlur, which is not bit-reproducible across
-// independent Chromium process launches under --use-angle=swiftshader.
+// test is the gate). `blur` and `glow` were tried as SVG filters and
+// dropped -- both compiled to feGaussianBlur, which is not bit-reproducible
+// across independent Chromium process launches under
+// --use-angle=swiftshader.
 //
 // `drop-shadow` (native feDropShadow) was clean across every trial for as
 // long as the only thing on screen was the filtered element itself. Once
@@ -36,11 +37,30 @@ import { z } from "zod";
 // alone across independent launches (apps/worker's
 // gen-render-delivery.determinism test caught it; isolating the filtered
 // element in its own stacking context via `isolation: isolate` or a nested
-// `<svg>` did not help). A background is mandatory now, and a palette-aware
-// fill is the whole point of this renderer, so neither one is the thing
-// that "does not go in" -- drop-shadow is. SPEC_EFFECTS is empty until an
-// effect is found that survives being drawn over a painted background.
-export const SPEC_EFFECTS = [] as const;
+// `<svg>` did not help). Filters were tried twice (blur/glow, then
+// drop-shadow) and failed both times -- the raster <filter> pipeline itself
+// is where the non-determinism lives, not any one primitive.
+//
+// `glow` and `drop-shadow` were both tried a third time, as pure geometry
+// instead of filters: apps/worker/src/render-app/generated.ts drew a glow
+// as a scaled-up, lower-opacity copy of the element, and a drop-shadow as
+// one offset, darkened copy -- both composited with nothing but
+// fill/opacity/translate, the same primitives that already render text,
+// rects and images reproducibly, and both re-proven against the exact
+// condition that killed feDropShadow (a filled element over a painted
+// background). Only `drop-shadow` survived. Its unscaled, translate-only
+// copy held clean across dozens of real-Chromium determinism runs,
+// including under the concurrent CPU load of the full test suite -- the
+// condition that turned out to matter, since a single isolated re-run of
+// the gate can pass by chance even when an effect is not actually
+// reliable. `glow`'s scaled copy did not: even pixel-snapped and cut down
+// to one layer, it still failed intermittently once the gate ran under
+// that same concurrent load. Scaling a copy, not stacking several, is
+// what keeps landing geometry back in the same failure mode as the raster
+// <filter> attempts above -- see gen-render-delivery.determinism.test.ts's
+// own comment for the full run log. `glow` is dropped a second time;
+// `blur` was never geometry-shaped to begin with and stays dropped too.
+export const SPEC_EFFECTS = ["drop-shadow"] as const;
 
 export type Ease = "linear" | "easeIn" | "easeOut" | "easeInOut";
 export type Keyframe = {

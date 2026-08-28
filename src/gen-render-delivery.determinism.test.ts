@@ -18,14 +18,50 @@ import { renderGeneratedDelivery } from "./gen-render-delivery.js";
 // This test is also the admission gate for SPEC_EFFECTS: the fixture below
 // renders one element per entry in SPEC_EFFECTS (built from the list
 // itself, not hand-copied), so an effect only belongs on the allowlist once
-// it has passed here. blur, glow and (once this batch started painting a
-// real background under a palette-aware fill) drop-shadow were all tried
-// and removed after this test caught them drifting -- SPEC_EFFECTS is
-// currently empty, so that map contributes no elements right now, but the
-// wiring stays so the next effect proposed for the allowlist is proven or
-// disproven right here. This same gate is also what I5 (image compositing,
-// palette, colour assets) has to survive: the fixture below draws one of
-// each, not just the effects list.
+// it has passed here. blur/glow and, later, drop-shadow were tried as SVG
+// filters (feGaussianBlur, feDropShadow) and removed after this test caught
+// them drifting. `glow` and `drop-shadow` were tried a third time as pure
+// geometry (apps/worker/src/render-app/generated.ts) instead of filters.
+// Only `drop-shadow` survived; `glow` was dropped a second time. Run log:
+//
+//   - Effects-as-geometry, first pass (3-layer glow, unrounded boxes, over
+//     the painted background, combined with drop-shadow on one animated
+//     shape element): failed 6/6 runs, at varying frame indices -- the
+//     same failure shape as feGaussianBlur/feDropShadow.
+//   - Isolated drop-shadow alone (single offset copy, whole-pixel offset,
+//     unscaled box): passed 8/8.
+//   - Isolated glow alone, 3 stacked scaled layers, boxes still unrounded:
+//     failed 4/4.
+//   - Rounding every effect-layer coordinate to a whole pixel: a single
+//     rounded glow layer passed 10/10; two rounded layers passed 10/10;
+//     three rounded layers still failed 12 of 14 runs -- pixel-snapping
+//     fixed the sub-pixel-edge failure mode, but stacking three overlapping
+//     partially-transparent draws reproduces the filter pipeline's failure
+//     mode by itself.
+//   - 2-layer glow + drop-shadow together, both pixel-snapped, run in
+//     isolation (this file alone): passed 15/15 consecutive runs. But run
+//     as part of the full worker suite (`vitest run`, 26 files, real
+//     concurrent CPU load rather than one idle Chromium launch at a time),
+//     the same design failed 2 of 12 full-suite runs -- an isolated re-run
+//     of this one file was not a strong enough condition to catch it. This
+//     is the same lesson the task's own framing already carried ("a single
+//     green run proves very little"): a lightly-loaded re-run can, too.
+//   - Under that same full-suite condition: drop-shadow alone passed 25 of
+//     25 runs (10 isolated + 15 full-suite); glow alone (single
+//     pixel-snapped layer, no drop-shadow) failed 1 of 8 full-suite runs;
+//     glow+drop-shadow together (1-layer glow, depth-3 stack) failed 2 of
+//     12 full-suite runs. Scaling a copy for falloff -- not stacking
+//     several, not sub-pixel edges -- is what keeps landing glow back in
+//     the raster pipeline's failure mode.
+//   - drop-shadow alone, final design, re-confirmed: 15 more full-suite
+//     runs, 0 failures (38 total runs across isolated and full-suite
+//     conditions, 0 failures).
+//
+// `drop-shadow` is admitted; `glow` stays out a second time.
+//
+// This same gate is also what I5 (image compositing, palette, colour
+// assets, and the palette-derived fill a bare shape now gets) has to
+// survive: the fixture below draws one of each, not just the effects list.
 const defaultChromePath = fileURLToPath(
   new URL(
     "../../../runtime/hydrated/chrome-for-testing/chrome-linux64/chrome",
@@ -179,6 +215,24 @@ const shortFixtureSpec: SceneSpec = {
           box: { x: 900, y: 60, width: 120, height: 120 },
           keyframes: [],
           effects: [],
+        },
+        // Effects-as-geometry, round 3: SPEC_EFFECTS.map above already
+        // draws one text element per allowlisted effect over the painted
+        // background -- the exact condition that killed feDropShadow. This
+        // element widens that coverage to the *other* shape a generated
+        // scene draws (a bare rect, no assetRef, so it also exercises I5's
+        // palette-derived shape fill), animated (scale and opacity), over
+        // the same background -- and, via [...SPEC_EFFECTS], to whatever
+        // is currently allowlisted rather than a hand-picked subset.
+        {
+          elementId: "effect-stack-shape",
+          kind: "shape" as const,
+          box: { x: 80, y: 1550, width: 260, height: 260 },
+          keyframes: [
+            { frame: 0, opacity: 0.5, scale: 0.8, ease: "linear" as const },
+            { frame: 5, opacity: 1, scale: 1, ease: "easeInOut" as const },
+          ],
+          effects: [...SPEC_EFFECTS],
         },
       ],
     },
