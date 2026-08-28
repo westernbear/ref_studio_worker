@@ -24,7 +24,13 @@ import {
 // allow: SIZE_OK - the deterministic renderer page is an inline data template.
 
 const CHROMIUM_VERSION = "151.0.7922.138";
+// The restore track's fixed product size, and the default the capture page
+// takes when a render contract does not carry its own canvas ("preflight"
+// and "workflow" -- see BrowserCaptureInput's renderContract union below).
+// Only "generated" ever overrides this, with the canvas its own scene
+// declared.
 const VIEWPORT = { width: 1080, height: 1920 } as const;
+type CanvasSize = Readonly<{ width: number; height: number }>;
 const DevToolsTarget = z.object({ webSocketDebuggerUrl: z.string().url() });
 const RuntimeProbe = z.object({
   frame: z.number().int().nonnegative(),
@@ -173,8 +179,11 @@ export type BrowserCaptureInput = Readonly<{
         scene: SceneIR;
       }>
     // Phase 2 generated-scene path (ruling 4): DOM/SVG only, no owner-bound
-    // WebGL2 passes, so there is no BrowserPassSpec/SceneIR to carry.
-    | Readonly<{ kind: "generated" }>;
+    // WebGL2 passes, so there is no BrowserPassSpec/SceneIR to carry. It
+    // does carry the scene's own canvas, though: unlike the restore track
+    // (always 1080x1920), a generated scene can be any of the three
+    // declared aspects, and the capture page has to be sized to match.
+    | Readonly<{ kind: "generated"; canvas: CanvasSize }>;
 }>;
 
 export type BrowserCaptureReport = Readonly<{
@@ -209,9 +218,10 @@ const waitForFile = async (
   throw new Error("CHROMIUM_START_TIMEOUT");
 };
 
-const renderPage = (
+export const renderPage = (
   fontPath: string,
   passList: readonly BrowserPassSpec["passList"][number][],
+  canvas: CanvasSize = VIEWPORT,
 ): string => `<!doctype html>
 <html lang="en">
 <head>
@@ -219,13 +229,13 @@ const renderPage = (
   <style>
     @font-face { font-family: RvsLocal; src: url(${JSON.stringify(pathToFileURL(fontPath).href)}); font-display: block; }
     * { box-sizing: border-box; }
-    html, body { width: 1080px; height: 1920px; margin: 0; overflow: hidden; background: #050505; }
+    html, body { width: ${canvas.width}px; height: ${canvas.height}px; margin: 0; overflow: hidden; background: #050505; }
     body { font-family: RvsLocal, sans-serif; }
-    canvas, #scene { position: absolute; inset: 0; width: 1080px; height: 1920px; }
+    canvas, #scene { position: absolute; inset: 0; width: ${canvas.width}px; height: ${canvas.height}px; }
     #background-effects { z-index: 0; }
     #scene { z-index: 1; }
     #owner-effects { z-index: 2; pointer-events: none; }
-    #scene svg { width: 1080px; height: 1920px; overflow: hidden; }
+    #scene svg { width: ${canvas.width}px; height: ${canvas.height}px; overflow: hidden; }
     /* :where() keeps these at their original specificity, so the
        global-residual rule below still wins, while a measured fill="" from
        the renderer is no longer overridden by the stylesheet -- a CSS fill
@@ -239,9 +249,9 @@ const renderPage = (
   </style>
 </head>
 <body>
-  <canvas id="background-effects" width="1080" height="1920"></canvas>
+  <canvas id="background-effects" width="${canvas.width}" height="${canvas.height}"></canvas>
   <div id="scene"></div>
-  <canvas id="owner-effects" width="1080" height="1920"></canvas>
+  <canvas id="owner-effects" width="${canvas.width}" height="${canvas.height}"></canvas>
   <script>
     const passList = ${JSON.stringify(passList)};
     const shaderSources = ${JSON.stringify(shaderSources)};
@@ -289,7 +299,7 @@ const renderPage = (
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-      gl.viewport(0, 0, 1080, 1920);
+      gl.viewport(0, 0, ${canvas.width}, ${canvas.height});
       const clear = () => {
         gl.disable(gl.BLEND);
         gl.clearColor(0, 0, 0, alpha ? 0 : 1);
@@ -356,9 +366,9 @@ const renderPage = (
       document.getElementById("scene").innerHTML = markup;
       const svg = document.querySelector("#scene svg");
       if (!svg) throw new Error("SEMANTIC_SCENE_MISSING");
-      svg.setAttribute("viewBox", "0 0 1080 1920");
-      svg.setAttribute("width", "1080");
-      svg.setAttribute("height", "1920");
+      svg.setAttribute("viewBox", "0 0 ${canvas.width} ${canvas.height}");
+      svg.setAttribute("width", "${canvas.width}");
+      svg.setAttribute("height", "${canvas.height}");
       await document.fonts.ready;
       const nodes = Array.from(document.querySelectorAll("#scene [data-owner-id]")).map(element => ({
         ownerId: element.getAttribute("data-owner-id") || "",
@@ -473,8 +483,14 @@ export async function captureBrowserFrames(
     input.renderContract.kind === "workflow"
       ? input.renderContract.browserPassSpec.passList
       : [];
+  // "preflight" and "workflow" (the restore track) stay pinned to the
+  // portrait default -- only "generated" ever supplies a different canvas.
+  const canvas: CanvasSize =
+    input.renderContract.kind === "generated"
+      ? input.renderContract.canvas
+      : VIEWPORT;
   await mkdir(profile, { recursive: true });
-  await writeFile(pagePath, renderPage(input.fontPath, passList), {
+  await writeFile(pagePath, renderPage(input.fontPath, passList, canvas), {
     mode: 0o600,
   });
   const child = spawn(
@@ -539,9 +555,9 @@ export async function captureBrowserFrames(
       urls: ["http://*", "https://*", "ftp://*"],
     });
     await client.send("Emulation.setDeviceMetricsOverride", {
-      ...VIEWPORT,
-      screenWidth: VIEWPORT.width,
-      screenHeight: VIEWPORT.height,
+      ...canvas,
+      screenWidth: canvas.width,
+      screenHeight: canvas.height,
       deviceScaleFactor: 1,
       mobile: false,
     });

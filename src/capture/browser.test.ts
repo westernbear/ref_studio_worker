@@ -3,7 +3,8 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { captureBrowserFrames, CdpClient } from "./browser.js";
+import { CANVAS } from "../contracts/index.js";
+import { captureBrowserFrames, CdpClient, renderPage } from "./browser.js";
 
 class FakeWebSocket extends EventTarget {
   constructor(_url: string) {
@@ -67,4 +68,55 @@ describe("CDP cancellation", () => {
       await rm(workspace, { recursive: true, force: true });
     }
   });
+});
+
+describe("renderPage canvas sizing", () => {
+  const aspects = Object.entries(CANVAS);
+
+  for (const [aspect, dimensions] of aspects) {
+    it(`sizes every dimension-bearing spot in the page to ${aspect}'s ${dimensions.width}x${dimensions.height}, with nothing left over from another ratio`, () => {
+      const page = renderPage("/tmp/font.ttf", [], dimensions);
+
+      // Every spot the defect report named must reflect this scene's own
+      // canvas, not the portrait default.
+      expect(page).toContain(
+        `html, body { width: ${dimensions.width}px; height: ${dimensions.height}px;`,
+      );
+      expect(page).toContain(
+        `width: ${dimensions.width}px; height: ${dimensions.height}px; }\n    #background-effects`,
+      );
+      expect(page).toContain(
+        `#scene svg { width: ${dimensions.width}px; height: ${dimensions.height}px;`,
+      );
+      expect(page).toContain(
+        `<canvas id="background-effects" width="${dimensions.width}" height="${dimensions.height}"></canvas>`,
+      );
+      expect(page).toContain(
+        `<canvas id="owner-effects" width="${dimensions.width}" height="${dimensions.height}"></canvas>`,
+      );
+      expect(page).toContain(
+        `gl.viewport(0, 0, ${dimensions.width}, ${dimensions.height});`,
+      );
+      expect(page).toContain(
+        `svg.setAttribute("viewBox", "0 0 ${dimensions.width} ${dimensions.height}");`,
+      );
+      expect(page).toContain(`svg.setAttribute("width", "${dimensions.width}");`);
+      expect(page).toContain(`svg.setAttribute("height", "${dimensions.height}");`);
+
+      // No dimension pair belonging to one of the *other* two aspects
+      // should survive anywhere in the page -- this is exactly the shape
+      // of the shipped defect (a 1080x1920 page regardless of scene).
+      for (const [otherAspect, other] of aspects) {
+        if (otherAspect === aspect) continue;
+        if (other.width === dimensions.width && other.height === dimensions.height)
+          continue;
+        expect(page).not.toContain(`width: ${other.width}px; height: ${other.height}px`);
+        expect(page).not.toContain(
+          `width="${other.width}" height="${other.height}"`,
+        );
+        expect(page).not.toContain(`gl.viewport(0, 0, ${other.width}, ${other.height})`);
+        expect(page).not.toContain(`0 0 ${other.width} ${other.height}`);
+      }
+    });
+  }
 });

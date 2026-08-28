@@ -187,7 +187,10 @@ export async function renderGeneratedDelivery(
     frames: renderedFrames,
     signal,
     onFrame: async () => undefined,
-    renderContract: { kind: "generated" },
+    renderContract: {
+      kind: "generated",
+      canvas: { width: canvas.width, height: canvas.height },
+    },
   };
   const captureReport: BrowserCaptureReport = await capture(captureInput);
 
