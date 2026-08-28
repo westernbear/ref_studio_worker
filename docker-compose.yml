@@ -64,11 +64,14 @@ services:
   # generated material never leaves the machine and the worker still has no
   # internet. Neither is started by default; bring one up and set the
   # matching RVS_*_BASE_URL, or leave it out and that material kind keeps
-  # failing closed by name. Set RVS_WAN_ALPHA_IMAGE / RVS_HI3DGEN_IMAGE to
+  # failing closed by name. Separate profiles on purpose: a 14B video model
+  # at Q4 is ~10GB of a 12GB card before its text encoder, so these two
+  # cannot co-reside on one GPU. Pick one, or give them a GPU each.
+  # Set RVS_WAN_ALPHA_IMAGE / RVS_HI3DGEN_IMAGE to
   # the serving images you built; the defaults below are local tags that
   # will simply not resolve until you do.
   wan-alpha:
-    profiles: ["material"]
+    profiles: ["video"]
     image: ${RVS_WAN_ALPHA_IMAGE:-rvs-wan-alpha:local}
     restart: always
     init: true
@@ -85,7 +88,7 @@ services:
               count: 1
               capabilities: [gpu]
   hi3dgen:
-    profiles: ["material"]
+    profiles: ["model3d"]
     image: ${RVS_HI3DGEN_IMAGE:-rvs-hi3dgen:local}
     restart: always
     init: true
