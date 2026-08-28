@@ -1,5 +1,9 @@
 import { createHash } from "node:crypto";
-import type { MaterialKind, SceneSpec } from "./contracts/index.js";
+import type {
+  MaterialKind,
+  SceneSpec,
+  SpecAssetForm,
+} from "./contracts/index.js";
 
 // The seam an external material-generation provider plugs into.
 //
@@ -36,6 +40,13 @@ export type MaterialRequest = Readonly<{
   // Null when the scene's author recorded no seed. A provider that needs a
   // seed to be reproducible must derive one and record what it used.
   seed: number | null;
+  // How the scene asked for this material to be made: "flat" for a 2D
+  // generation, "object" for a rendered three-dimensional thing. Always
+  // present -- planSceneAssets normalises an absent field to "flat" -- so
+  // a provider (and restrictToForm below) never has to re-decide what a
+  // missing value meant. Distinct from `kind`, which is what the renderer
+  // draws: an object-form request still comes back as an image.
+  form: SpecAssetForm;
   canvas: SceneSpec["canvas"];
 }>;
 
@@ -137,6 +148,40 @@ export function restrictToKind(
     },
     generate: (request, signal) => {
       active = request.kind === kind ? provider : fallback;
+      return active.generate(request, signal);
+    },
+  };
+}
+
+// The same fallback chaining as restrictToKind, one field over. It exists
+// because `kind` alone stopped being enough to pick a provider: the
+// Hi3DGen+Blender provider and the remote 2D image provider both answer
+// an `image` request and both hand back a PNG, so composing them by kind
+// would have them fight over every generated image. `form` is the field
+// that tells them apart, and routing on it is a different question from
+// restricting by kind -- hence a second combinator rather than widening
+// the first, which would have to take a predicate and stop saying what it
+// means in its own name.
+//
+// Deliberately not a `kind` of its own: see SPEC_ASSET_FORMS in the scene
+// schema. The renderer draws an image either way; only the way the bytes
+// are made differs.
+//
+// `tool` tracks the active provider for the same reason restrictToKind's
+// does -- produceMaterial reads it after generate() returns, and it must
+// name whichever provider actually served the request.
+export function restrictToForm(
+  form: SpecAssetForm,
+  provider: MaterialProvider,
+  fallback: MaterialProvider = unavailableMaterialProvider,
+): MaterialProvider {
+  let active: MaterialProvider = provider;
+  return {
+    get tool() {
+      return active.tool;
+    },
+    generate: (request, signal) => {
+      active = request.form === form ? provider : fallback;
       return active.generate(request, signal);
     },
   };

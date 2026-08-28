@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   MaterialGenerationError,
   produceMaterial,
+  restrictToForm,
   restrictToKind,
   unavailableMaterialProvider,
   type MaterialProvider,
@@ -14,6 +15,7 @@ const request: MaterialRequest = {
   kind: "image",
   prompt: "a dark studio backdrop",
   seed: 7,
+  form: "flat",
   canvas: { width: 1080, height: 1920, fps: 30, frameCount: 600 },
 };
 const bytes = Uint8Array.from([1, 2, 3, 4]);
@@ -222,5 +224,79 @@ describe("restrictToKind", () => {
     const restricted = restrictToKind("image", dynamic);
     const material = await produceMaterial(restricted, request, signal);
     expect(material.provenance.tool).toBe("openai:gpt-image-2");
+  });
+});
+
+// Two providers both answer `image` requests -- the 2D one and the
+// Hi3DGen+Blender one -- so kind alone cannot pick between them.
+describe("restrictToForm", () => {
+  const objectRequest: MaterialRequest = { ...request, form: "object" };
+  const flatProvider: MaterialProvider = {
+    tool: "flat-provider@1",
+    generate: async (req) => ({
+      bytes,
+      contentType: "image/png",
+      provenance: {
+        tool: "flat-provider@1",
+        prompt: req.prompt,
+        sha256: bytesSha,
+      },
+    }),
+  };
+  const objectProvider: MaterialProvider = {
+    tool: "object-provider@1",
+    generate: async (req) => ({
+      bytes,
+      contentType: "image/png",
+      provenance: {
+        tool: "object-provider@1",
+        prompt: req.prompt,
+        sha256: bytesSha,
+      },
+    }),
+  };
+
+  it("delegates a matching form to the wrapped provider", async () => {
+    const routed = restrictToForm("object", objectProvider, flatProvider);
+    const material = await produceMaterial(routed, objectRequest, signal);
+    expect(material.provenance.tool).toBe("object-provider@1");
+  });
+
+  it("sends every other form to the fallback", async () => {
+    const routed = restrictToForm("object", objectProvider, flatProvider);
+    const material = await produceMaterial(routed, request, signal);
+    expect(material.provenance.tool).toBe("flat-provider@1");
+  });
+
+  it("never calls the wrapped provider for a form it does not own", async () => {
+    let called = false;
+    const routed = restrictToForm(
+      "object",
+      {
+        tool: "object-provider@1",
+        generate: async () => {
+          called = true;
+          throw new Error("must not be called");
+        },
+      },
+      flatProvider,
+    );
+    await produceMaterial(routed, request, signal);
+    expect(called).toBe(false);
+  });
+
+  it("refuses through the fail-closed stub when given no fallback", async () => {
+    const routed = restrictToForm("object", objectProvider);
+    await expect(produceMaterial(routed, request, signal)).rejects.toThrow(
+      /MATERIAL_PROVIDER_UNAVAILABLE/u,
+    );
+  });
+
+  it("reports whichever provider actually served the request as its tool", async () => {
+    const routed = restrictToForm("object", objectProvider, flatProvider);
+    await produceMaterial(routed, objectRequest, signal);
+    expect(routed.tool).toBe("object-provider@1");
+    await produceMaterial(routed, request, signal);
+    expect(routed.tool).toBe("flat-provider@1");
   });
 });

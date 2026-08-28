@@ -9,6 +9,7 @@ const request: MaterialRequest = {
   kind: "image",
   prompt: "a dark studio backdrop",
   seed: 7,
+  form: "flat",
   canvas: { width: 1080, height: 1920, fps: 30, frameCount: 60 },
 };
 const bytes = Uint8Array.from([1, 2, 3, 4]);

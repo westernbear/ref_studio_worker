@@ -181,6 +181,57 @@ describe("resolveSceneAssets", () => {
     });
   });
 
+  // The provider seam is the only place a scene's "make this as a
+  // three-dimensional object" can be acted on, so the request that reaches
+  // it has to say so.
+  it("hands the asset's form to the provider, defaulting to flat", async () => {
+    await withWorkspace(async (workspace) => {
+      const bytes = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 9]);
+      const sha256 = createHash("sha256").update(bytes).digest("hex");
+      const forms: string[] = [];
+      const provider: MaterialProvider = {
+        tool: "fake-provider@1",
+        generate: async (request) => {
+          forms.push(request.form);
+          return {
+            bytes,
+            contentType: "image/png" as const,
+            provenance: {
+              tool: "fake-provider@1",
+              prompt: request.prompt,
+              sha256,
+            },
+          };
+        },
+      };
+      const generated = (assetId: string, form?: "flat" | "object") => ({
+        assetId,
+        kind: "image" as const,
+        origin: "generated" as const,
+        ref: `generated://${assetId}`,
+        ...(form ? { form } : {}),
+        provenance: {
+          tool: "author-declared",
+          prompt: `prompt for ${assetId}`,
+          sha256: "0".repeat(64),
+        },
+      });
+      await resolveSceneAssets(
+        {
+          spec: specWith([
+            generated("handset", "object"),
+            generated("backdrop"),
+          ]),
+          attachmentIds: [],
+          workspace,
+          signal,
+        },
+        { downloadAttachment, provider },
+      );
+      expect(forms).toEqual(["object", "flat"]);
+    });
+  });
+
   it("records the provider's real provenance over whatever the author declared", async () => {
     await withWorkspace(async (workspace) => {
       const bytes = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 9]);

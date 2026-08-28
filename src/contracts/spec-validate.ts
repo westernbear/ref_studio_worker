@@ -108,5 +108,14 @@ export function validateSceneSpec(
     if (asset.origin === "generated" && asset.provenance === undefined)
       fail("GENERATED_ASSET_WITHOUT_PROVENANCE");
 
+  // `form` says how material is made, so it can only say anything about
+  // material this studio makes. An attachment is already whatever the
+  // creator uploaded, and evidence carries no pixels at all -- asking
+  // either for an "object" is asking for a render that will never happen,
+  // which is exactly the silent no-op this file exists to refuse.
+  for (const asset of value.assets)
+    if (asset.form === "object" && asset.origin !== "generated")
+      fail("ASSET_FORM_NOT_GENERATED");
+
   return value;
 }

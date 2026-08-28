@@ -141,6 +141,7 @@ export async function resolveSceneAssets(
           kind: required.kind,
           prompt: required.source.prompt,
           seed: required.source.seed,
+          form: required.source.form,
           canvas: input.spec.canvas,
         },
         input.signal,

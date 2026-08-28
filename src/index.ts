@@ -1,6 +1,7 @@
 import { fileURLToPath } from "node:url";
-import { restrictToKind } from "./material-provider.js";
+import { restrictToForm, restrictToKind } from "./material-provider.js";
 import { createRemoteImageMaterialProvider } from "./remote-image-material-provider.js";
+import { createSelfHosted3DMaterialProvider } from "./self-hosted-3d-material-provider.js";
 import { createSelfHostedVideoMaterialProvider } from "./self-hosted-video-material-provider.js";
 import { createWorkerApi, type Fetcher } from "./worker-api.js";
 import { runWorkerDaemon } from "./worker-daemon.js";
@@ -25,15 +26,26 @@ export const createWorkerRuntime = (
       // worker-internal. Anything else -- `font` today -- still fails
       // closed through the innermost fallback.
       //
-      // The Hi3DGen provider is deliberately absent: it returns a PNG for
-      // an `image` request, so wiring it here would have it fight the
-      // remote image provider for every generated image. A scene has no
-      // way to say "this asset is a rendered 3D object" yet, and inventing
-      // one is a schema decision, not a wiring decision.
+      // Two providers answer an `image` request, so kind alone cannot pick
+      // between them: the scene's asset `form` does. An object-form asset
+      // ("this is a physical thing in space") goes to Hi3DGen+Blender,
+      // which generates a mesh and renders one still of it; everything
+      // else goes to the 2D image provider, which is every generated image
+      // authored before `form` existed. With RVS_HI3DGEN_BASE_URL unset,
+      // the 3D provider refuses by name rather than falling through -- a
+      // deployment running only the image provider is unaffected, and an
+      // object-form scene fails loudly there instead of silently getting a
+      // flat picture of what it asked to be an object.
       materialProviderFactory: (jobId) =>
         restrictToKind(
           "image",
-          createRemoteImageMaterialProvider(api, jobId),
+          restrictToForm(
+            "object",
+            createSelfHosted3DMaterialProvider({
+              baseUrl: config.hi3dgenBaseUrl,
+            }),
+            createRemoteImageMaterialProvider(api, jobId),
+          ),
           restrictToKind(
             "video",
             createSelfHostedVideoMaterialProvider({

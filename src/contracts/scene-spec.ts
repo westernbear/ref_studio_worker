@@ -84,6 +84,17 @@ export const SPEC_TEXT_WEIGHT_AXIS: Readonly<Record<SpecTextWeight, number>> = {
   black: 1000,
 };
 
+// How a generated asset's material is *made*, as opposed to `kind`, which
+// is what the renderer draws with it. `object` routes the asset to the
+// self-hosted Hi3DGen+Blender provider, which generates a mesh and renders
+// one still of it; `flat` (the default, and the common case) routes it to
+// the 2D image provider. Deliberately not a `kind` value: both paths hand
+// back a PNG the renderer draws as an image, so a kind that said "3d
+// model" would be a lie in the type -- the renderer has no mesh to draw.
+// Only meaningful on a generated asset; validateSceneSpec says so.
+export const SPEC_ASSET_FORMS = ["flat", "object"] as const;
+export type SpecAssetForm = (typeof SPEC_ASSET_FORMS)[number];
+
 export type Ease = "linear" | "easeIn" | "easeOut" | "easeInOut";
 export type Keyframe = {
   readonly frame: number;
@@ -123,6 +134,9 @@ export type SpecAsset = {
   readonly kind: "image" | "video" | "font" | "color";
   readonly origin: "attachment" | "evidence" | "generated";
   readonly ref: string;
+  // Absent means "flat" -- so every scene authored before this field
+  // existed asks for exactly the material it always did.
+  readonly form?: SpecAssetForm | undefined;
   readonly provenance?:
     | {
         readonly tool: string;
@@ -210,6 +224,7 @@ const SpecAssetSchema = z
     kind: z.enum(["image", "video", "font", "color"]),
     origin: z.enum(["attachment", "evidence", "generated"]),
     ref: z.string().min(1),
+    form: z.enum(SPEC_ASSET_FORMS).optional(),
     provenance: z
       .object({
         tool: z.string().min(1),

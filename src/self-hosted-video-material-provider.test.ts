@@ -17,6 +17,7 @@ const request: MaterialRequest = {
   kind: "video",
   prompt: "a floating glass orb, alpha background",
   seed: null,
+  form: "flat",
   canvas: { width: 64, height: 48, fps: 10, frameCount: 20 },
 };
 const signal = new AbortController().signal;

@@ -27,15 +27,18 @@ import { runCommand, type CommandRunner } from "./process-runner.js";
 // This is why it is wired as an *alternative* backend for the existing
 // `image` MaterialKind (see index.ts) rather than a kind of its own: the
 // scene-asset contract (apps/worker/src/contracts/scene-assets.ts) has
-// exactly three material kinds -- image, video, font -- and no way for a
-// SceneSpec to say "this image should come from a 3D render" as opposed to
-// a 2D generation prompt. An operator who sets RVS_HI3DGEN_BASE_URL is
-// choosing Hi3DGen+Blender as their whole image-material backend in place
-// of the OpenAI relay, for every generated image in that deployment, not
-// per-asset -- the same "one active backend, chosen by configuration"
-// shape apps/api's material_provider_settings already uses for OpenAI.
-// Leaving RVS_HI3DGEN_BASE_URL unset keeps today's OpenAI-relay path
-// completely unchanged (see index.ts's createWorkerRuntime).
+// exactly three material kinds -- image, video, font -- and both this
+// provider and the 2D one hand back a PNG the renderer draws as an image,
+// so a kind that said "3d model" would be a lie in the type.
+//
+// Which of the two answers a given `image` request is now a per-asset
+// decision the scene makes: SpecAsset's `form` field ("flat" or
+// "object"), routed by restrictToForm in index.ts. An object-form asset
+// comes here; everything else goes to the OpenAI relay, exactly as before.
+// Leaving RVS_HI3DGEN_BASE_URL unset keeps that relay path completely
+// unchanged and makes an object-form asset fail by name below, rather than
+// silently getting a flat picture of something the scene asked to be a
+// physical object.
 export const HI3DGEN_BLENDER_TOOL = "hi3dgen+blender-cycles-cpu-spp128@1";
 
 // Cycles is not bit-identical across CPU, CUDA and OptiX, and its denoiser

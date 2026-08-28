@@ -17,6 +17,8 @@ const request: MaterialRequest = {
   kind: "image",
   prompt: "a faceted glass paperweight",
   seed: null,
+  // The only form that routes here -- see restrictToForm in index.ts.
+  form: "object",
   canvas: { width: 96, height: 64, fps: 30, frameCount: 90 },
 };
 const signal = new AbortController().signal;
