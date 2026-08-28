@@ -19,15 +19,20 @@ import { SceneSpecSchema, type SceneSpec } from "./scene-spec.js";
 // both processes already depend on.
 export class SpecError extends Error {
   readonly token: string;
-  constructor(token: string) {
-    super(token);
+  // The token alone says a rule was broken, not which value broke it. A
+  // live ASSET_REF_UNRESOLVED took a database dump and a replay against
+  // the provider to trace back to the one asset at fault; the detail
+  // carries that in the message, while `token` stays exactly the token so
+  // callers matching on it are unaffected.
+  constructor(token: string, detail?: string) {
+    super(detail ? `${token}: ${detail}` : token);
     this.name = "SpecError";
     this.token = token;
   }
 }
 
-const fail = (token: string): never => {
-  throw new SpecError(token);
+const fail = (token: string, detail?: string): never => {
+  throw new SpecError(token, detail);
 };
 
 const EXTERNAL_URL = /^https?:\/\//iu;
@@ -100,8 +105,16 @@ export function validateSceneSpec(
     for (const element of beat.elements)
       if (element.assetRef !== undefined) {
         const asset = assetsById.get(element.assetRef);
-        if (!asset || !resolvable.has(element.assetRef))
-          fail("ASSET_REF_UNRESOLVED");
+        if (!asset)
+          fail(
+            "ASSET_REF_UNRESOLVED",
+            `element ${element.elementId} names asset ${element.assetRef}, which the spec does not declare`,
+          );
+        else if (!resolvable.has(element.assetRef))
+          fail(
+            "ASSET_REF_UNRESOLVED",
+            `asset ${element.assetRef} (origin ${asset.origin}) is not backed by anything this job supplied`,
+          );
       }
 
   for (const asset of value.assets)
