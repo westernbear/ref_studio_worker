@@ -18,3 +18,19 @@ From the repository root, `docker compose up -d --build` starts the web, API, re
 On a separate worker server, `RVS_API_BASE_URL` must be the API address reachable from that server, including the host port exposed by the API deployment. For example, use `http://192.168.123.100:13001` when that address serves `/v1/workers/register`; do not use the web UI URL. `RVS_WORKER_TOKEN` must exactly match the API server's value. `RVS_API_REQUEST_TIMEOUT_MS` covers ordinary JSON calls, while `RVS_MEDIA_REQUEST_TIMEOUT_MS` covers source downloads and artifact uploads and defaults to 30 minutes.
 
 Run the no-network runtime verification with `docker compose run --rm worker-smoke`. It checks the pinned Chrome executable, FFmpeg, compiler unit boundary, model hashes, and offline model loading without starting the worker daemon.
+
+## Self-hosted generators
+
+`docker-compose.generators.yml` supplies the build contexts for the two
+optional GPU services the base compose declares but cannot start on its own
+(`wan-alpha` for alpha-channel video, `hi3dgen` for meshes). Bring one up
+with:
+
+```sh
+docker compose -f docker-compose.yml -f docker-compose.generators.yml \
+  --profile video up -d --build wan-alpha
+```
+
+then set its address in the admin console under Material generators. One at
+a time on a single card; `generators/README.md` carries the VRAM figures,
+where the weights go, and what is still unverified.
