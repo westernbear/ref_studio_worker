@@ -19,18 +19,21 @@ On a separate worker server, `RVS_API_BASE_URL` must be the API address reachabl
 
 Run the no-network runtime verification with `docker compose run --rm worker-smoke`. It checks the pinned Chrome executable, FFmpeg, compiler unit boundary, model hashes, and offline model loading without starting the worker daemon.
 
+
 ## Self-hosted generators
 
-`docker-compose.generators.yml` supplies the build contexts for the two
-optional GPU services the base compose declares but cannot start on its own
-(`wan-alpha` for alpha-channel video, `hi3dgen` for meshes). Bring one up
-with:
+Two optional GPU services the worker calls directly for material it cannot
+get any other way: `wan-alpha` for video with a real alpha channel,
+`hi3dgen` for meshes it then renders as object-form images. Both are behind
+Compose profiles, so an ordinary `docker compose up` leaves them out.
 
 ```sh
-docker compose -f docker-compose.yml -f docker-compose.generators.yml \
-  --profile video up -d --build wan-alpha
+docker compose --profile video   up -d --build wan-alpha
+docker compose --profile model3d up -d --build hi3dgen
 ```
 
-then set its address in the admin console under Material generators. One at
-a time on a single card; `generators/README.md` carries the VRAM figures,
-where the weights go, and what is still unverified.
+Then set the address in the admin console under Material generators
+(`http://wan-alpha:8000`, `http://hi3dgen:8000`); the API sends it to the
+worker with each assets claim. One at a time on a single card.
+`generators/README.md` carries the VRAM figures, where the weights go, and
+what is still unverified.

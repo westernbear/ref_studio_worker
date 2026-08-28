@@ -13,13 +13,13 @@ them on the host and mount them.
 ## Bringing one up
 
 ```sh
-# from apps/worker
-docker compose -f docker-compose.yml -f docker-compose.generators.yml \
-  --profile video up -d --build wan-alpha
-
-docker compose -f docker-compose.yml -f docker-compose.generators.yml \
-  --profile model3d up -d --build hi3dgen
+# from the worker checkout
+docker compose --profile video   up -d --build wan-alpha
+docker compose --profile model3d up -d --build hi3dgen
 ```
+
+Neither starts without its profile, so an ordinary `docker compose up`
+brings up the worker alone and leaves the GPU services out.
 
 Then set the address in the admin console under **Material generators**:
 `http://wan-alpha:8000` and `http://hi3dgen:8000`. The API sends it to the

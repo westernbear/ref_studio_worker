@@ -4,6 +4,42 @@ x-worker-env-files: &worker-env-files
   - path: .env
     required: false
 
+# Shared by the two GPU generators below. Weights live on the host, not in
+# the image: they are tens of gigabytes and worker-internal is
+# `internal: true`, so these containers have no network to fetch them with.
+x-generator-gpu-env: &generator-gpu-env
+  NVIDIA_VISIBLE_DEVICES: all
+  NVIDIA_DRIVER_CAPABILITIES: compute,utility
+  HF_HOME: /models/huggingface
+x-generator-common: &generator-common
+  restart: always
+  init: true
+  stop_grace_period: 60s
+  networks:
+    - worker-internal
+  volumes:
+    - ${RVS_MODEL_CACHE:-./generators/models}:/models:ro
+  deploy:
+    resources:
+      reservations:
+        devices:
+          - driver: nvidia
+            count: 1
+            capabilities: [gpu]
+  healthcheck:
+    test:
+      - CMD
+      - python3
+      - -c
+      - "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8000/healthz').read()"
+    interval: 30s
+    timeout: 10s
+    retries: 3
+    # Loading a 14B model off disk is minutes, not seconds. A short start
+    # period would mark a healthy service unhealthy while it was still
+    # doing exactly what it was told to.
+    start_period: 600s
+
 services:
   api-relay:
     image: reference-video-studio-worker:1.0.0
@@ -72,38 +108,46 @@ services:
   # will simply not resolve until you do.
   wan-alpha:
     profiles: ["video"]
+    <<: *generator-common
+    build:
+      context: ./generators/wan-alpha
+      dockerfile: Dockerfile
     image: ${RVS_WAN_ALPHA_IMAGE:-rvs-wan-alpha:local}
-    restart: always
-    init: true
-    networks:
-      - worker-internal
     environment:
-      NVIDIA_VISIBLE_DEVICES: all
-      NVIDIA_DRIVER_CAPABILITIES: compute,utility
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
+      <<: *generator-gpu-env
+      # Quantised base, for a 12GB card. Unverified in this combination:
+      # Wan-Alpha's RGBA output needs a DoRA and two custom VAE decoders on
+      # top of Wan2.1-14B, and no report exists of that working over a
+      # GGUF-quantised base. The fp8 base is the lower-risk route and does
+      # not fit 12GB. Quality at Q4 has only ever been assessed on RGB,
+      # never on alpha edges -- hair, glow, semi-transparency -- which is
+      # what this model exists for. Test the matte before relying on it.
+      RVS_WAN_BASE: ${RVS_WAN_BASE:-/models/wan2.1-14b-Q4_K_M.gguf}
+      RVS_WAN_DORA: ${RVS_WAN_DORA:-/models/wan-alpha-dora}
+      RVS_WAN_VAE_RGB: ${RVS_WAN_VAE_RGB:-/models/wan-alpha-vae-rgb}
+      RVS_WAN_VAE_ALPHA: ${RVS_WAN_VAE_ALPHA:-/models/wan-alpha-vae-alpha}
   hi3dgen:
     profiles: ["model3d"]
+    <<: *generator-common
+    build:
+      context: ./generators/hi3dgen
+      dockerfile: Dockerfile
     image: ${RVS_HI3DGEN_IMAGE:-rvs-hi3dgen:local}
-    restart: always
-    init: true
-    networks:
-      - worker-internal
     environment:
-      NVIDIA_VISIBLE_DEVICES: all
-      NVIDIA_DRIVER_CAPABILITIES: compute,utility
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
+      <<: *generator-gpu-env
+      RVS_HI3DGEN_WEIGHTS: ${RVS_HI3DGEN_WEIGHTS:-/models/hi3dgen}
+      # Hi3DGen is image-to-3D. The worker asks for material with a prompt
+      # and nothing else (see self-hosted-3d-material-provider.ts's
+      # Hi3DGenClient), so this service has to draw the reference image
+      # itself before it can lift it into a mesh. Unset this and an
+      # object-form asset fails by name rather than silently returning
+      # something that is not what the scene asked for.
+      RVS_HI3DGEN_T2I: ${RVS_HI3DGEN_T2I:-/models/sdxl-turbo}
+      # Hi3DGen leaks VRAM between generations (Stable3DGen issue #42
+      # reports 14.2GB growing to 23.9GB over three runs), so the server
+      # frees outputs and empties the CUDA cache after every request. Set
+      # this to 0 only while investigating that.
+      RVS_HI3DGEN_EMPTY_CACHE: ${RVS_HI3DGEN_EMPTY_CACHE:-1}
   worker-smoke:
     profiles: ["smoke"]
     image: reference-video-studio-worker:1.0.0
