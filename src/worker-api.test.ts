@@ -63,6 +63,41 @@ const readyApi = async (
 };
 
 describe("WorkerApi.requestMaterial", () => {
+  // The API relays this to an image model and holds the request open until
+  // it answers -- tens of seconds, not milliseconds. Under the ordinary
+  // JSON timeout the worker gave up mid-generation and failed the job with
+  // WORKER_JOB_HANDLER_FAILED, for an asset that was on its way.
+  it("waits on the media budget, not the ordinary JSON one", async () => {
+    const budgets: number[] = [];
+    const { api } = await readyApi(() =>
+      Response.json({
+        contentType: "image/png",
+        bytesBase64: Buffer.from(Uint8Array.from([1])).toString("base64"),
+        provenance: {
+          tool: "t",
+          prompt: "p",
+          sha256: createHash("sha256")
+            .update(Uint8Array.from([1]))
+            .digest("hex"),
+        },
+      }),
+    );
+    // AbortSignal.timeout is how readResponse budgets a call; recording
+    // what it is asked for is the only way to see the budget from outside.
+    const realTimeout = AbortSignal.timeout.bind(AbortSignal);
+    AbortSignal.timeout = ((ms: number) => {
+      budgets.push(ms);
+      return realTimeout(ms);
+    }) as typeof AbortSignal.timeout;
+    try {
+      await api.requestMaterial("job-a", request, new AbortController().signal);
+    } finally {
+      AbortSignal.timeout = realTimeout;
+    }
+    expect(budgets).toEqual([config.mediaRequestTimeoutMs]);
+    expect(budgets).not.toContain(config.apiRequestTimeoutMs);
+  });
+
   it("posts the request to the job's material endpoint with the lease header", async () => {
     const bytes = Uint8Array.from([1, 2, 3, 4]);
     const sha256 = createHash("sha256").update(bytes).digest("hex");

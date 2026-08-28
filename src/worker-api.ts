@@ -275,6 +275,10 @@ export function createWorkerApi(
     signal?: AbortSignal,
     token = sessionToken,
     leaseToken?: string,
+    // Ordinary JSON calls answer in milliseconds, so they share one short
+    // timeout. A call that waits on a model does not belong under it --
+    // see requestMaterial, which passes the media budget instead.
+    timeoutMs = config.apiRequestTimeoutMs,
   ): Promise<T> {
     if (!token)
       throw new WorkerApiError(path, null, "worker session is not registered");
@@ -285,7 +289,7 @@ export function createWorkerApi(
         headers: { "content-type": "application/json" },
         body: JSON.stringify(body),
       },
-      config.apiRequestTimeoutMs,
+      timeoutMs,
       signal,
       (response) => response.text(),
       token,
@@ -611,6 +615,13 @@ export function createWorkerApi(
         signal,
         sessionToken,
         leaseFor(jobId),
+        // Not an ordinary JSON call: the API relays this to an image model
+        // and holds the request open until it answers, which is tens of
+        // seconds, not milliseconds. Under the 30-second JSON timeout the
+        // worker gave up mid-generation and failed the job with
+        // WORKER_JOB_HANDLER_FAILED -- for an asset that was on its way.
+        // Same budget the source downloads and artifact uploads use.
+        config.mediaRequestTimeoutMs,
       );
       return {
         bytes: Buffer.from(response.bytesBase64, "base64"),
