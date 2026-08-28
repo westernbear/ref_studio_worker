@@ -58,6 +58,49 @@ services:
       RVS_POLL_INTERVAL_MS: ${RVS_POLL_INTERVAL_MS:-5000}
     networks:
       - worker-internal
+  # Self-hosted inference, reachable only from the worker. Both sit on
+  # worker-internal and nothing else: that network is `internal: true`, so
+  # these services have no route off the host either, which is the point --
+  # generated material never leaves the machine and the worker still has no
+  # internet. Neither is started by default; bring one up and set the
+  # matching RVS_*_BASE_URL, or leave it out and that material kind keeps
+  # failing closed by name. Set RVS_WAN_ALPHA_IMAGE / RVS_HI3DGEN_IMAGE to
+  # the serving images you built; the defaults below are local tags that
+  # will simply not resolve until you do.
+  wan-alpha:
+    profiles: ["material"]
+    image: ${RVS_WAN_ALPHA_IMAGE:-rvs-wan-alpha:local}
+    restart: always
+    init: true
+    networks:
+      - worker-internal
+    environment:
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+  hi3dgen:
+    profiles: ["material"]
+    image: ${RVS_HI3DGEN_IMAGE:-rvs-hi3dgen:local}
+    restart: always
+    init: true
+    networks:
+      - worker-internal
+    environment:
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
   worker-smoke:
     profiles: ["smoke"]
     image: reference-video-studio-worker:1.0.0

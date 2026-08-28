@@ -1,6 +1,7 @@
 import { fileURLToPath } from "node:url";
 import { restrictToKind } from "./material-provider.js";
 import { createRemoteImageMaterialProvider } from "./remote-image-material-provider.js";
+import { createSelfHostedVideoMaterialProvider } from "./self-hosted-video-material-provider.js";
 import { createWorkerApi, type Fetcher } from "./worker-api.js";
 import { runWorkerDaemon } from "./worker-daemon.js";
 import { parseWorkerConfig } from "./worker-config.js";
@@ -19,12 +20,27 @@ export const createWorkerRuntime = (
     api,
     handleJob: createWorkflowJobHandler({
       api,
-      // Image is the one material kind implemented today; every other
-      // kind still fails closed through restrictToKind's fallback
-      // (unavailableMaterialProvider), so a self-hosted video or 3D
-      // provider can land later without this line changing.
+      // Image goes out to the API (which holds the vendor key and the only
+      // outbound network); video is served by a self-hosted service on
+      // worker-internal. Anything else -- `font` today -- still fails
+      // closed through the innermost fallback.
+      //
+      // The Hi3DGen provider is deliberately absent: it returns a PNG for
+      // an `image` request, so wiring it here would have it fight the
+      // remote image provider for every generated image. A scene has no
+      // way to say "this asset is a rendered 3D object" yet, and inventing
+      // one is a schema decision, not a wiring decision.
       materialProviderFactory: (jobId) =>
-        restrictToKind("image", createRemoteImageMaterialProvider(api, jobId)),
+        restrictToKind(
+          "image",
+          createRemoteImageMaterialProvider(api, jobId),
+          restrictToKind(
+            "video",
+            createSelfHostedVideoMaterialProvider({
+              baseUrl: config.wanAlphaBaseUrl,
+            }),
+          ),
+        ),
     }),
   };
 };
