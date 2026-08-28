@@ -1,30 +1,56 @@
-# Wan-Alpha serving image. CUDA runtime plus ffmpeg, because the server
-# encodes the finished clip itself rather than handing back raw frames.
+# Wan-Alpha serving image.
 #
-# The torch/diffusers stack and the Wan-Alpha code are installed here; the
-# weights are not. They are tens of gigabytes and the container has no
-# network (worker-internal is `internal: true`), so they are mounted from
-# the host at /models -- see generators/README.md.
-FROM nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04
+# Based on the PyTorch runtime image rather than nvidia/cuda, because torch
+# and its CUDA libraries are the bulk of this build -- around 2.5GB of
+# wheels from download.pytorch.org, which is slow from most of the world
+# and is the single biggest thing to stop downloading. The base image
+# already has them, and comes from Docker Hub, which mirrors well.
+#
+# Override it if this tag is wrong for your driver:
+#   docker compose build --build-arg TORCH_IMAGE=pytorch/pytorch:<tag> wan-alpha
+ARG TORCH_IMAGE=pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime
+FROM ${TORCH_IMAGE}
+
+# Point these at a mirror when the defaults are slow. In Korea, for
+# example:
+#   docker compose build \
+#     --build-arg APT_MIRROR=mirror.kakao.com \
+#     --build-arg PIP_INDEX_URL=https://mirror.kakao.com/pypi/simple \
+#     wan-alpha
+ARG APT_MIRROR=""
+ARG PIP_INDEX_URL="https://pypi.org/simple"
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1 \
     HF_HUB_OFFLINE=1 \
     TRANSFORMERS_OFFLINE=1
 
-RUN apt-get update \
- && apt-get install -y --no-install-recommends \
-      python3.10 python3-pip ffmpeg git \
- && rm -rf /var/lib/apt/lists/*
+# `rm -rf /var/lib/apt/lists/*` BEFORE update, not only after: a stale
+# index shipped in the base layer (or served by a caching proxy) is what
+# produces "Hashes of received file" mismatches, and apt will keep using
+# the old one rather than admit it. Retries cover a merely flaky link.
+RUN set -eux; \
+    rm -rf /var/lib/apt/lists/*; \
+    if [ -n "${APT_MIRROR}" ]; then \
+      sed -i "s|http://archive.ubuntu.com|http://${APT_MIRROR}|g; s|http://security.ubuntu.com|http://${APT_MIRROR}|g" \
+        /etc/apt/sources.list /etc/apt/sources.list.d/* 2>/dev/null || true; \
+    fi; \
+    apt-get -o Acquire::Retries=5 update; \
+    apt-get install -y --no-install-recommends ffmpeg; \
+    rm -rf /var/lib/apt/lists/*
 
-RUN python3 -m pip install --upgrade pip \
- && python3 -m pip install \
-      torch==2.5.1 torchvision==0.20.1 --index-url https://download.pytorch.org/whl/cu124
-
-# Pinned rather than floating: a silent minor bump in any of these changes
-# what the model draws, and this pipeline's whole claim is reproducibility.
-RUN python3 -m pip install \
+# A BuildKit cache mount, so a rebuild reuses what it already downloaded
+# instead of fetching every wheel again. The previous PIP_NO_CACHE_DIR=1
+# was actively working against that.
+#
+# torch and torchvision are NOT listed: they come with the base image, and
+# reinstalling them would pull the very gigabytes this image exists to
+# avoid. Everything else is pinned rather than floating -- a silent minor
+# bump changes what the model draws, and this pipeline's whole claim is
+# reproducibility.
+COPY requirements.txt /app/requirements.txt
+RUN --mount=type=cache,target=/root/.cache/pip \
+    python3 -m pip install --index-url "${PIP_INDEX_URL}" \
       diffusers==0.32.2 \
       transformers==4.48.0 \
       accelerate==1.2.1 \
@@ -32,10 +58,8 @@ RUN python3 -m pip install \
       peft==0.14.0 \
       gguf==0.13.0 \
       imageio==2.36.1 \
-      numpy==1.26.4
-
-COPY requirements.txt /app/requirements.txt
-RUN python3 -m pip install -r /app/requirements.txt
+      numpy==1.26.4 \
+ && python3 -m pip install --index-url "${PIP_INDEX_URL}" -r /app/requirements.txt
 
 COPY server.py /app/server.py
 WORKDIR /app

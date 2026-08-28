@@ -7,6 +7,20 @@ x-worker-env-files: &worker-env-files
 # Shared by the two GPU generators below. Weights live on the host, not in
 # the image: they are tens of gigabytes and worker-internal is
 # `internal: true`, so these containers have no network to fetch them with.
+# Build-time mirrors. torch and its CUDA libraries are the bulk of these
+# images and come from the base image rather than a wheel download, but the
+# rest still comes from Ubuntu and PyPI, which are slow from some networks
+# and occasionally serve a stale index. Point these at something closer:
+#
+#   RVS_APT_MIRROR=mirror.kakao.com
+#   RVS_PIP_INDEX_URL=https://mirror.kakao.com/pypi/simple
+#
+# Empty APT_MIRROR leaves the distribution's own sources alone.
+x-generator-build-args: &generator-build-args
+  TORCH_IMAGE: ${RVS_TORCH_IMAGE:-pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime}
+  APT_MIRROR: ${RVS_APT_MIRROR:-}
+  PIP_INDEX_URL: ${RVS_PIP_INDEX_URL:-https://pypi.org/simple}
+
 x-generator-gpu-env: &generator-gpu-env
   NVIDIA_VISIBLE_DEVICES: all
   NVIDIA_DRIVER_CAPABILITIES: compute,utility
@@ -112,6 +126,8 @@ services:
     build:
       context: ./generators/wan-alpha
       dockerfile: Dockerfile
+      args:
+        <<: *generator-build-args
     image: ${RVS_WAN_ALPHA_IMAGE:-rvs-wan-alpha:local}
     environment:
       <<: *generator-gpu-env
@@ -132,6 +148,8 @@ services:
     build:
       context: ./generators/hi3dgen
       dockerfile: Dockerfile
+      args:
+        <<: *generator-build-args
     image: ${RVS_HI3DGEN_IMAGE:-rvs-hi3dgen:local}
     environment:
       <<: *generator-gpu-env

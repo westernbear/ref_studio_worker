@@ -28,6 +28,35 @@ effect on the next job rather than the next restart. Leave one blank and
 that material kind is refused by name — a scene that asks for neither video
 nor object material is unaffected.
 
+## When the build is slow, or apt fails on a hash mismatch
+
+Both images start from `pytorch/pytorch:...-runtime` rather than
+`nvidia/cuda`, because torch and its CUDA libraries are the bulk of the
+build — around 2.5 GB of wheels from `download.pytorch.org`, which is slow
+from most of the world. The base image already has them.
+
+What is left comes from Ubuntu and PyPI. Point those at something closer:
+
+```sh
+RVS_APT_MIRROR=mirror.kakao.com \
+RVS_PIP_INDEX_URL=https://mirror.kakao.com/pypi/simple \
+  docker compose --profile video up -d --build wan-alpha
+```
+
+`apt-get update` failing with *"Hashes of received file"* not matching is
+not a corrupt download — it is a stale index, usually from a caching
+proxy. Both Dockerfiles clear `/var/lib/apt/lists` before updating rather
+than only after, which is the fix; a mirror as above avoids the proxy
+entirely.
+
+Rebuilds reuse the pip download cache through a BuildKit cache mount, so
+only the first build pays for the wheels. If your Docker has BuildKit
+disabled, enable it (`DOCKER_BUILDKIT=1`) or the mount is ignored and every
+rebuild downloads again.
+
+`RVS_TORCH_IMAGE` overrides the base image if that tag is wrong for your
+driver.
+
 ## One at a time
 
 This is not a suggestion on a single card.
