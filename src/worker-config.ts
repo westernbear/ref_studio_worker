@@ -14,6 +14,14 @@ const EnvSchema = z.object({
     .int()
     .min(1)
     .default(1_800_000),
+  // Self-hosted material-generation services, reachable only on
+  // worker-internal (see docker-compose.yml) -- unlike the image provider,
+  // which has no worker-side base URL at all because it goes through the
+  // API relay. Both are optional: a deployment that never sets them keeps
+  // getting MATERIAL_PROVIDER_NOT_CONFIGURED for that kind, exactly as
+  // before self-hosted-*-material-provider.ts existed.
+  RVS_WAN_ALPHA_BASE_URL: z.string().url().optional(),
+  RVS_HI3DGEN_BASE_URL: z.string().url().optional(),
 });
 
 export type WorkerConfig = Readonly<{
@@ -25,6 +33,8 @@ export type WorkerConfig = Readonly<{
   pollIntervalMs: number;
   apiRequestTimeoutMs: number;
   mediaRequestTimeoutMs: number;
+  wanAlphaBaseUrl?: string;
+  hi3dgenBaseUrl?: string;
 }>;
 
 export function parseWorkerConfig(
@@ -45,5 +55,11 @@ export function parseWorkerConfig(
     pollIntervalMs: parsed.RVS_POLL_INTERVAL_MS,
     apiRequestTimeoutMs: parsed.RVS_API_REQUEST_TIMEOUT_MS,
     mediaRequestTimeoutMs: parsed.RVS_MEDIA_REQUEST_TIMEOUT_MS,
+    ...(parsed.RVS_WAN_ALPHA_BASE_URL !== undefined
+      ? { wanAlphaBaseUrl: parsed.RVS_WAN_ALPHA_BASE_URL }
+      : {}),
+    ...(parsed.RVS_HI3DGEN_BASE_URL !== undefined
+      ? { hi3dgenBaseUrl: parsed.RVS_HI3DGEN_BASE_URL }
+      : {}),
   };
 }

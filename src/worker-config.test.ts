@@ -32,4 +32,31 @@ describe("worker config", () => {
       }),
     ).toThrow();
   });
+  it("leaves the self-hosted material base URLs unset by default", () => {
+    const config = parseWorkerConfig({
+      RVS_API_BASE_URL: "https://api.example.test",
+      RVS_WORKER_TOKEN: "secret",
+    });
+    expect(config.wanAlphaBaseUrl).toBeUndefined();
+    expect(config.hi3dgenBaseUrl).toBeUndefined();
+  });
+  it("parses the self-hosted material base URLs when configured", () => {
+    const config = parseWorkerConfig({
+      RVS_API_BASE_URL: "https://api.example.test",
+      RVS_WORKER_TOKEN: "secret",
+      RVS_WAN_ALPHA_BASE_URL: "http://wan-alpha:8000",
+      RVS_HI3DGEN_BASE_URL: "http://hi3dgen:8000",
+    });
+    expect(config.wanAlphaBaseUrl).toBe("http://wan-alpha:8000");
+    expect(config.hi3dgenBaseUrl).toBe("http://hi3dgen:8000");
+  });
+  it("rejects a self-hosted material base URL that isn't a valid URL", () => {
+    expect(() =>
+      parseWorkerConfig({
+        RVS_API_BASE_URL: "https://api.example.test",
+        RVS_WORKER_TOKEN: "secret",
+        RVS_WAN_ALPHA_BASE_URL: "not-a-url",
+      }),
+    ).toThrow();
+  });
 });
