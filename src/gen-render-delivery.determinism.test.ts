@@ -4,7 +4,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { deflateSync } from "node:zlib";
-import { CANVAS, DELIVERY_FPS, SPEC_EFFECTS, type SceneSpec } from "./contracts/index.js";
+import {
+  CANVAS,
+  DELIVERY_FPS,
+  SPEC_EFFECTS,
+  SPEC_TEXT_WEIGHTS,
+  type SceneSpec,
+} from "./contracts/index.js";
 import { describe, expect, it } from "vitest";
 import { renderGeneratedDelivery } from "./gen-render-delivery.js";
 
@@ -62,6 +68,10 @@ import { renderGeneratedDelivery } from "./gen-render-delivery.js";
 // This same gate is also what I5 (image compositing, palette, colour
 // assets, and the palette-derived fill a bare shape now gets) has to
 // survive: the fixture below draws one of each, not just the effects list.
+// Per-element font weight is inside this gate for the same reason -- the
+// fixture draws one text element per entry in SPEC_TEXT_WEIGHTS, built
+// from the list itself, so a scene field that renders is a scene field
+// this gate has proven reproducible, not one sitting beside it.
 const defaultChromePath = fileURLToPath(
   new URL(
     "../../../runtime/hydrated/chrome-for-testing/chrome-linux64/chrome",
@@ -179,6 +189,23 @@ const shortFixtureSpec: SceneSpec = {
             { frame: 5, opacity: 1, ease: "easeInOut" as const },
           ],
           effects: [effect],
+        })),
+        // One text element per named font weight, derived from
+        // SPEC_TEXT_WEIGHTS itself rather than hand-listed: the weight
+        // reaches the page as a variable-font axis value, so the whole
+        // 400-1000 range has to be shown reproducible, not just the 700
+        // the page already defaulted to.
+        ...SPEC_TEXT_WEIGHTS.map((weight, index) => ({
+          elementId: `weight-${weight}`,
+          kind: "text" as const,
+          content: `WEIGHT ${weight.toUpperCase()}`,
+          box: { x: 80, y: 520 + index * 120, width: 920, height: 100 },
+          keyframes: [
+            { frame: 0, opacity: 0.6, ease: "linear" as const },
+            { frame: 5, opacity: 1, ease: "easeInOut" as const },
+          ],
+          effects: [],
+          weight,
         })),
         // Palette item 2: a text element with no colour-asset override
         // must default to palette.hero, not the capture page's white.

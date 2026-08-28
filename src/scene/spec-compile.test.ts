@@ -30,6 +30,17 @@ const withGap = (spec: SceneSpec): SceneSpec => {
 };
 
 describe("compileSceneSpec", () => {
+  it("carries a text element's named weight through to the draw", () => {
+    const spec = clone(fixtureSpec);
+    Object.assign(spec.beats[0]!.elements[0]!, { weight: "black" });
+    expect(compileSceneSpec(spec).frames[0]?.draws[0]?.weight).toBe("black");
+  });
+
+  it("leaves weight absent when the element names none", () => {
+    const draw = compileSceneSpec(fixtureSpec).frames[0]?.draws[0];
+    expect(draw && "weight" in draw).toBe(false);
+  });
+
   it("is deterministic", () => {
     expect(compileSceneSpec(fixtureSpec).digest).toBe(
       compileSceneSpec(fixtureSpec).digest,

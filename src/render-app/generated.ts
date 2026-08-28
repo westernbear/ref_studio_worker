@@ -1,5 +1,10 @@
 import { pathToFileURL } from "node:url";
-import { SPEC_EFFECTS, type SpecAsset } from "../contracts/index.js";
+import {
+  SPEC_EFFECTS,
+  SPEC_TEXT_WEIGHT_AXIS,
+  type SpecAsset,
+  type SpecTextWeight,
+} from "../contracts/index.js";
 import type { FramePlan, SpecCompilation } from "../scene/spec-compile.js";
 import type { LocalFont, RenderedFrame } from "./index.js";
 
@@ -82,6 +87,15 @@ const KNOWN_EFFECTS: ReadonlySet<string> = new Set(SPEC_EFFECTS);
 const colorFill = (asset: SpecAsset | undefined): string | undefined =>
   asset?.kind === "color" ? asset.ref : undefined;
 
+// A named weight reaches the page as the axis number it stands for, as an
+// SVG presentation attribute -- the capture page defaults text to 700 only
+// for text carrying no font-weight of its own (capture/browser.ts), so an
+// attribute is precisely what overrides it. Absent stays absent: no
+// attribute, page default, byte-identical to how the scene rendered before
+// this field existed.
+const weightAttribute = (weight: SpecTextWeight | undefined): string =>
+  weight === undefined ? "" : ` font-weight="${SPEC_TEXT_WEIGHT_AXIS[weight]}"`;
+
 type Box = {
   readonly x: number;
   readonly y: number;
@@ -124,11 +138,16 @@ const effectLayerMarkup = (
   opacity: number,
   color: string,
   content: string | undefined,
+  weight: SpecTextWeight | undefined,
 ): string => {
   const id = `${escapeXml(elementId)}__${suffix}`;
   const attributes = `data-element-id="${id}" x="${box.x}" y="${box.y}" width="${box.width}" height="${box.height}" opacity="${opacity}"`;
+  // The shadow copy takes the element's own weight: a copy drawn at the
+  // page default under text set in another weight would sit at different
+  // glyph widths and read as a second, misaligned line rather than a
+  // shadow.
   if (content !== undefined)
-    return `<text ${attributes} fill="${escapeXml(color)}" font-size="${Math.max(8, Math.round(box.height * 0.8))}">${escapeXml(content)}</text>`;
+    return `<text ${attributes} fill="${escapeXml(color)}" font-size="${Math.max(8, Math.round(box.height * 0.8))}"${weightAttribute(weight)}>${escapeXml(content)}</text>`;
   return `<rect ${attributes} fill="${escapeXml(color)}" />`;
 };
 
@@ -152,6 +171,7 @@ const effectLayersMarkup = (
     draw.opacity * DROP_SHADOW_OPACITY_FACTOR,
     shadowColor,
     draw.content,
+    draw.weight,
   );
 };
 
@@ -201,7 +221,7 @@ const drawMarkup = (
     // scene's hero colour, never the capture page's stylesheet default.
     const fill = colorFill(asset) ?? palette.hero;
     const effects = effectLayersMarkup(draw, false, palette.background);
-    return `${effects}<text ${attributes} fill="${escapeXml(fill)}" font-size="${Math.max(8, Math.round(draw.box.height * 0.8))}">${escapeXml(draw.content)}</text>`;
+    return `${effects}<text ${attributes} fill="${escapeXml(fill)}" font-size="${Math.max(8, Math.round(draw.box.height * 0.8))}"${weightAttribute(draw.weight)}>${escapeXml(draw.content)}</text>`;
   }
   // A shape with no colour-asset override used to render as an unfilled
   // (invisible) rect -- the same class of bug as the white background that

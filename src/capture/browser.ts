@@ -243,13 +243,13 @@ export const renderPage = (
     #scene text { font-family: RvsLocal, sans-serif; dominant-baseline: hanging; }
     /* Weight is a default, not a constant: an element that names its own
        font-weight wins over this -- the bundled Wanted Sans is a variable
-       font spanning the full weight axis, so a scene that wants hierarchy
-       through weight contrast (not just size) needs a way to ask for it.
-       No render app emits a font-weight attribute today -- doing that
-       would need a schema field to author the value from, which is out of
-       scope here -- so every scene still renders at 700, unchanged; this
-       only removes the stylesheet as the reason a scene *couldn't* vary
-       it. */
+       font spanning a 400-1000 weight axis, so a scene that wants hierarchy
+       through weight contrast (not just size) can ask for it. A generated
+       scene now does: SceneSpec's optional per-text-element "weight"
+       (regular/bold/black) reaches this page as the mapped axis number on
+       the <text> itself (render-app/generated.ts). 700 stays the default
+       for text that names nothing, so a scene authored without a weight
+       renders exactly as it always has. */
     #scene text:where(:not([font-weight])) { font-weight: 700; }
     #scene text:where(:not([fill])) { fill: #fff; }
     #scene rect { stroke-width: 3; rx: 28; }

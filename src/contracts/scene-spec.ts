@@ -62,6 +62,28 @@ import { z } from "zod";
 // `blur` was never geometry-shaped to begin with and stays dropped too.
 export const SPEC_EFFECTS = ["drop-shadow"] as const;
 
+// The weights a text element may ask for. Named and constrained for the
+// same reason SPEC_EFFECTS is (see the comment above it): this schema is
+// also the AI's structured-output schema, so a Zod enum becomes a JSON
+// Schema enum and the model cannot emit 437 or 250 -- which a free number
+// invites. The bundled Wanted Sans Variable has a `wght` axis measured at
+// 400-1000, and each named value is a real point on it that earns its
+// place: `regular` for body lines, `bold` for emphasis (also the capture
+// page's own default, so a scene that names nothing renders exactly as it
+// did before this field existed), `black` for the axis maximum -- a number
+// or a headline that has to land. Hierarchy is built by contrasting them
+// within a beat, not by making everything heavy.
+export const SPEC_TEXT_WEIGHTS = ["regular", "bold", "black"] as const;
+export type SpecTextWeight = (typeof SPEC_TEXT_WEIGHTS)[number];
+// The name-to-axis mapping. Lives here rather than in the renderer because
+// it is the other half of the decision above -- the named set is only
+// meaningful alongside the numbers it stands for.
+export const SPEC_TEXT_WEIGHT_AXIS: Readonly<Record<SpecTextWeight, number>> = {
+  regular: 400,
+  bold: 700,
+  black: 1000,
+};
+
 export type Ease = "linear" | "easeIn" | "easeOut" | "easeInOut";
 export type Keyframe = {
   readonly frame: number;
@@ -76,6 +98,10 @@ export type SpecElement = {
   readonly kind: "text" | "image" | "shape" | "video";
   readonly assetRef?: string | undefined;
   readonly content?: string | undefined;
+  // Text only, and optional: absent means the capture page's own default
+  // weight, so every scene authored before this field existed renders
+  // byte-identically.
+  readonly weight?: SpecTextWeight | undefined;
   readonly box: {
     readonly x: number;
     readonly y: number;
@@ -153,6 +179,10 @@ const SpecElementSchema = z
     kind: z.enum(["text", "image", "shape", "video"]),
     assetRef: z.string().min(1).optional(),
     content: z.string().optional(),
+    // Same reasoning as `effects` below: a z.enum, not a number, because
+    // this schema constrains generation rather than validating it after
+    // the fact. See SPEC_TEXT_WEIGHTS.
+    weight: z.enum(SPEC_TEXT_WEIGHTS).optional(),
     box: BoxSchema,
     keyframes: z.array(KeyframeSchema),
     // Enforced right here via z.enum(SPEC_EFFECTS), not downstream as a

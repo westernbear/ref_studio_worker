@@ -214,6 +214,38 @@ describe("createGeneratedRenderApp", () => {
     expect(markup).not.toContain("hero-image__effect");
   });
 
+  // The capture page's stylesheet only defaults a weight for text that
+  // names none (`#scene text:where(:not([font-weight]))`), so an element
+  // that asked for one has to reach the page as a real presentation
+  // attribute carrying the mapped axis number, not the enum's name.
+  it("emits the mapped numeric font weight for a text element that names one", () => {
+    const spec = withElement(fixtureSpec, { weight: "black" });
+    const app = createGeneratedRenderApp(compileSceneSpec(spec), []);
+    const markup = app.renderFrame(0).markup;
+    expect(markup).toContain('font-weight="1000"');
+    expect(markup).not.toContain('font-weight="black"');
+  });
+
+  it("emits no font-weight at all when the element names none", () => {
+    const app = createGeneratedRenderApp(compileSceneSpec(fixtureSpec), []);
+    expect(app.renderFrame(0).markup).not.toContain("font-weight");
+  });
+
+  it("gives a drop-shadow copy the same weight as the text it shadows", () => {
+    const spec = withElement(fixtureSpec, {
+      weight: "regular",
+      effects: ["drop-shadow"],
+    });
+    const app = createGeneratedRenderApp(compileSceneSpec(spec), []);
+    const markup = app.renderFrame(0).markup;
+    const shadowIndex = markup.indexOf(
+      'data-element-id="headline__effect-drop-shadow"',
+    );
+    expect(markup.slice(shadowIndex, shadowIndex + 300)).toContain(
+      'font-weight="400"',
+    );
+  });
+
   it("refuses to resolve an image asset to a remote-looking path", () => {
     const assetPaths = new Map([
       ["hero-shot", "https://cdn.example.com/hero.png"],

@@ -1,5 +1,10 @@
 import { createHash } from "node:crypto";
-import type { Ease, Keyframe, SceneSpec } from "../contracts/index.js";
+import type {
+  Ease,
+  Keyframe,
+  SceneSpec,
+  SpecTextWeight,
+} from "../contracts/index.js";
 
 export type FramePlan = {
   readonly frame: number;
@@ -9,6 +14,11 @@ export type FramePlan = {
     readonly opacity: number;
     readonly assetRef?: string;
     readonly content?: string;
+    // The element's named font weight, when it asked for one. Carried as
+    // the name rather than the axis number: this compiler expands timing,
+    // it does not decide typography, and the name-to-number mapping is the
+    // schema's (SPEC_TEXT_WEIGHT_AXIS) for the renderer to apply.
+    readonly weight?: SpecTextWeight;
     // Not part of the literal Task 2.3 interface, but required so the
     // renderer (Task 2.4) can honour ruling 2: blur/glow/drop-shadow are
     // SVG filter primitives selected per element, and that per-element
@@ -114,6 +124,7 @@ export function compileSceneSpec(spec: SceneSpec): SpecCompilation {
           ...(element.content !== undefined
             ? { content: element.content }
             : {}),
+          ...(element.weight !== undefined ? { weight: element.weight } : {}),
           effects: element.effects,
         });
       }
