@@ -5,10 +5,10 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   createSelfHostedVideoMaterialProvider,
-  deriveSeed,
   WAN_ALPHA_TOOL,
   type WanAlphaClient,
 } from "./self-hosted-video-material-provider.js";
+import { deriveMaterialSeed } from "./material-seed.js";
 import { produceMaterial, type MaterialRequest } from "./material-provider.js";
 import { runCommand, type CommandRunner } from "./process-runner.js";
 
@@ -30,14 +30,6 @@ describe("createSelfHostedVideoMaterialProvider", () => {
     await expect(produceMaterial(provider, request, signal)).rejects.toThrow(
       /RVS_WAN_ALPHA_BASE_URL/u,
     );
-  });
-
-  it("derives a stable seed from asset id and prompt when the scene names none", () => {
-    const first = deriveSeed("hero-clip", "a floating glass orb");
-    const second = deriveSeed("hero-clip", "a floating glass orb");
-    const different = deriveSeed("hero-clip", "something else");
-    expect(first).toBe(second);
-    expect(first).not.toBe(different);
   });
 
   it("sends the derived seed to the client and records it in provenance", async () => {
@@ -77,7 +69,7 @@ describe("createSelfHostedVideoMaterialProvider", () => {
     const material = await produceMaterial(provider, request, signal);
 
     expect(calls).toHaveLength(1);
-    const expectedSeed = deriveSeed(request.assetId, request.prompt);
+    const expectedSeed = deriveMaterialSeed(request.assetId, request.prompt);
     expect(calls[0]?.seed).toBe(expectedSeed);
     expect(material.provenance.seed).toBe(expectedSeed);
     expect(material.provenance.tool).toBe(WAN_ALPHA_TOOL);
