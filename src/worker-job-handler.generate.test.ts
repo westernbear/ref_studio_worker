@@ -404,7 +404,12 @@ describe("the assets worker phase", () => {
 
     const result = await handler(job("assets", generated), signal);
 
-    expect(materialProviderFactory).toHaveBeenCalledWith("job-a");
+    // The endpoints default to "no such service" when the API sends none
+    // -- an older API, or a deployment that configured neither generator.
+    expect(materialProviderFactory).toHaveBeenCalledWith("job-a", {
+      video: null,
+      model3d: null,
+    });
     expect(materialProviderFactory).toHaveBeenCalledTimes(1);
     expect(result).toMatchObject({
       assets: [
@@ -418,6 +423,67 @@ describe("the assets worker phase", () => {
           },
         },
       ],
+    });
+  });
+
+  // The two self-hosted generators are addressed from the admin console
+  // now, not from each worker host's environment.
+  it("passes the material endpoints the API sent through to the factory", async () => {
+    const fake = api();
+    const bytes = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 9]);
+    const materialProviderFactory = vi.fn(
+      (jobId: string): MaterialProvider => ({
+        tool: `remote@${jobId}`,
+        generate: async (request) => ({
+          bytes,
+          contentType: "image/png" as const,
+          provenance: {
+            tool: `remote@${jobId}`,
+            prompt: request.prompt,
+            seed: 11,
+            sha256: sha256(bytes),
+          },
+        }),
+      }),
+    );
+    const handler = createWorkflowJobHandler({
+      api: fake,
+      materialProviderFactory,
+    } as unknown as WorkflowPipelineDependencies);
+    const generated = spec(
+      [
+        {
+          assetId: "backdrop",
+          kind: "image",
+          origin: "generated",
+          ref: "generated://backdrop",
+          provenance: {
+            tool: "author-declared",
+            prompt: "a dark studio backdrop",
+            seed: 7,
+            sha256: "0".repeat(64),
+          },
+        },
+      ],
+      ["backdrop"],
+    );
+    const claimed = job("assets", generated);
+    const withEndpoints = {
+      ...claimed,
+      payload: {
+        ...claimed.payload,
+        materialEndpoints: {
+          video: "http://wan-alpha:8000",
+          model3d: "http://hi3dgen:8000",
+        },
+      },
+    };
+
+    await handler(withEndpoints, signal);
+
+    expect(materialProviderFactory).toHaveBeenCalledWith("job-a", {
+      video: "http://wan-alpha:8000",
+      model3d: "http://hi3dgen:8000",
     });
   });
 

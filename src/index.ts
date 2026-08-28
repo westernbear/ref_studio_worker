@@ -36,20 +36,27 @@ export const createWorkerRuntime = (
       // deployment running only the image provider is unaffected, and an
       // object-form scene fails loudly there instead of silently getting a
       // flat picture of what it asked to be an object.
-      materialProviderFactory: (jobId) =>
+      //
+      // Both endpoints come from the job payload, which carries what the
+      // admin console has set (material-provider-settings.ts). The
+      // environment variables remain as a fallback for a worker talking to
+      // an API that predates the setting, and for a deployment that would
+      // rather pin them per host -- console first, because that is the one
+      // an operator can see and change.
+      materialProviderFactory: (jobId, endpoints) =>
         restrictToKind(
           "image",
           restrictToForm(
             "object",
             createSelfHosted3DMaterialProvider({
-              baseUrl: config.hi3dgenBaseUrl,
+              baseUrl: endpoints.model3d ?? config.hi3dgenBaseUrl,
             }),
             createRemoteImageMaterialProvider(api, jobId),
           ),
           restrictToKind(
             "video",
             createSelfHostedVideoMaterialProvider({
-              baseUrl: config.wanAlphaBaseUrl,
+              baseUrl: endpoints.video ?? config.wanAlphaBaseUrl,
             }),
           ),
         ),

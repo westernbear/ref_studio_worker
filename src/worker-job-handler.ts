@@ -65,6 +65,20 @@ const ScenePayload = {
   specDigest: z.string().regex(/^[a-f0-9]{64}$/u),
   attachmentIds: z.array(z.string().min(1)).max(20),
 } as const;
+// Where the two self-hosted generators live, set in the admin console and
+// sent with the assets phase. These used to be worker environment
+// variables, which meant a shell on every worker host to change one and no
+// way to see from the console whether either was configured. Optional so a
+// worker still runs against an API that predates this; null means the
+// deployment has no such service, and the provider refuses that material
+// kind by name.
+const MaterialEndpoints = z
+  .object({
+    video: z.string().url().nullable(),
+    model3d: z.string().url().nullable(),
+  })
+  .strict();
+export type MaterialEndpoints = z.infer<typeof MaterialEndpoints>;
 const WorkflowPayload = z
   .discriminatedUnion("phase", [
     z.object({ ...CommonPayload, phase: z.literal("analyze") }).strict(),
@@ -97,7 +111,12 @@ const WorkflowPayload = z
       })
       .strict(),
     z
-      .object({ ...CommonPayload, ...ScenePayload, phase: z.literal("assets") })
+      .object({
+        ...CommonPayload,
+        ...ScenePayload,
+        phase: z.literal("assets"),
+        materialEndpoints: MaterialEndpoints.optional(),
+      })
       .strict(),
     z
       .object({
@@ -182,7 +201,10 @@ export type WorkflowPipelineDependencies = Readonly<{
   // Left both unset, resolve-scene-assets falls back to the fail-closed
   // stub and any scene needing new material fails its job.
   materialProvider?: MaterialProvider;
-  materialProviderFactory?: (jobId: string) => MaterialProvider;
+  materialProviderFactory?: (
+    jobId: string,
+    endpoints: MaterialEndpoints,
+  ) => MaterialProvider;
   renderGenerated?: typeof renderGeneratedDelivery;
   workRoot?: string;
   renderDeadlineMs?: number;
@@ -344,6 +366,10 @@ export const createWorkflowJobHandler = (
                   ? {
                       provider: dependencies.materialProviderFactory(
                         job.jobId,
+                        payload.materialEndpoints ?? {
+                          video: null,
+                          model3d: null,
+                        },
                       ),
                     }
                   : {}),
