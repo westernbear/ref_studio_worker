@@ -144,7 +144,15 @@ export async function renderGeneratedDelivery(
   for (const asset of input.spec.assets)
     if (asset.origin === "generated" || asset.kind === "color")
       resolvableAssetIds.add(asset.assetId);
-  validateSceneSpec(input.spec, resolvableAssetIds);
+  // requireGeneratedOutput: this is render time, so every generated asset
+  // must already carry the tool and output hash the assets stage recorded
+  // from what was really produced. At authoring time those do not exist
+  // yet (see SpecAsset's provenance comment); here their absence means the
+  // assets stage did not run or did not verify, and nothing gets drawn
+  // from material whose origin is unaccounted for.
+  validateSceneSpec(input.spec, resolvableAssetIds, {
+    requireGeneratedOutput: true,
+  });
 
   const command = dependencies.runCommand ?? runCommand;
   const capture = dependencies.captureFrames ?? captureBrowserFrames;

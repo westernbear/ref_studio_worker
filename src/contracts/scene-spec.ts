@@ -126,7 +126,12 @@ export type Beat = {
   readonly beatId: string;
   readonly startFrame: number;
   readonly endFrame: number;
-  readonly shot: "push-in" | "hard-cut" | "ring-expand" | "tile-grid" | "type-flash";
+  readonly shot:
+    | "push-in"
+    | "hard-cut"
+    | "ring-expand"
+    | "tile-grid"
+    | "type-flash";
   readonly elements: readonly SpecElement[];
 };
 export type SpecAsset = {
@@ -137,12 +142,22 @@ export type SpecAsset = {
   // Absent means "flat" -- so every scene authored before this field
   // existed asks for exactly the material it always did.
   readonly form?: SpecAssetForm | undefined;
+  // Two halves with two different authors. `prompt` and `seed` are the
+  // scene author's intent -- what to make and with what seed -- and are
+  // the only parts the model can honestly supply. `tool` and `sha256` are
+  // facts about bytes that do not exist yet when the scene is written, so
+  // they are absent at authoring time and filled in by the assets stage
+  // from what the material provider actually produced (see workers.ts's
+  // generated-asset completion, which verifies the hash against the stored
+  // bytes before recording it). Requiring all four from the model made it
+  // invent a tool name and a hash -- observed in production: `tool:
+  // "midjourney"` and a "sha256" that was not hexadecimal.
   readonly provenance?:
     | {
-        readonly tool: string;
+        readonly tool?: string | undefined;
         readonly prompt: string;
         readonly seed?: number | undefined;
-        readonly sha256: string;
+        readonly sha256?: string | undefined;
       }
     | undefined;
 };
@@ -213,7 +228,13 @@ const BeatSchema = z
     beatId: z.string().min(1),
     startFrame: z.number().int().nonnegative(),
     endFrame: z.number().int().nonnegative(),
-    shot: z.enum(["push-in", "hard-cut", "ring-expand", "tile-grid", "type-flash"]),
+    shot: z.enum([
+      "push-in",
+      "hard-cut",
+      "ring-expand",
+      "tile-grid",
+      "type-flash",
+    ]),
     elements: z.array(SpecElementSchema),
   })
   .strict();
@@ -227,10 +248,10 @@ const SpecAssetSchema = z
     form: z.enum(SPEC_ASSET_FORMS).optional(),
     provenance: z
       .object({
-        tool: z.string().min(1),
+        tool: z.string().min(1).optional(),
         prompt: z.string().min(1),
         seed: z.number().optional(),
-        sha256: z.string().min(1),
+        sha256: z.string().min(1).optional(),
       })
       .strict()
       .optional(),

@@ -37,9 +37,20 @@ const fail = (token: string, detail?: string): never => {
 
 const EXTERNAL_URL = /^https?:\/\//iu;
 
+export type ValidateSceneSpecOptions = Readonly<{
+  // Whether a generated asset must already carry the half of its
+  // provenance that only exists once its bytes do (`tool` and `sha256`).
+  // False while the scene is being authored -- the model cannot know
+  // either, and demanding them made it invent both. True at render time,
+  // which is where the evidence-first guarantee has to hold: nothing gets
+  // drawn from generated material whose origin is not recorded as fact.
+  requireGeneratedOutput?: boolean;
+}>;
+
 export function validateSceneSpec(
   spec: unknown,
   resolvable: ReadonlySet<string>,
+  options: ValidateSceneSpecOptions = {},
 ): SceneSpec {
   const parsed = SceneSpecSchema.safeParse(spec);
   if (!parsed.success) return fail("SPEC_SCHEMA_INVALID");
@@ -69,7 +80,9 @@ export function validateSceneSpec(
   // is substituted in. BEAT_OVERLAP above already catches any pairwise
   // overlap; this walks beats in start-frame order to catch gaps and
   // misaligned first/last edges too.
-  const orderedBeats = value.beats.slice().sort((a, b) => a.startFrame - b.startFrame);
+  const orderedBeats = value.beats
+    .slice()
+    .sort((a, b) => a.startFrame - b.startFrame);
   if (orderedBeats.length === 0 || orderedBeats[0]!.startFrame !== 0)
     fail("BEAT_TILING_INVALID");
   for (let index = 0; index < orderedBeats.length - 1; index++)
@@ -118,8 +131,25 @@ export function validateSceneSpec(
       }
 
   for (const asset of value.assets)
-    if (asset.origin === "generated" && asset.provenance === undefined)
-      fail("GENERATED_ASSET_WITHOUT_PROVENANCE");
+    if (asset.origin === "generated") {
+      if (asset.provenance === undefined)
+        fail(
+          "GENERATED_ASSET_WITHOUT_PROVENANCE",
+          `asset ${asset.assetId} records no prompt for what it is`,
+        );
+      else if (options.requireGeneratedOutput) {
+        if (!asset.provenance.tool)
+          fail(
+            "GENERATED_ASSET_WITHOUT_PROVENANCE",
+            `asset ${asset.assetId} names no tool, so nothing records what made it`,
+          );
+        if (!asset.provenance.sha256)
+          fail(
+            "GENERATED_ASSET_WITHOUT_PROVENANCE",
+            `asset ${asset.assetId} records no output hash, so its bytes are unaccounted for`,
+          );
+      }
+    }
 
   // `form` says how material is made, so it can only say anything about
   // material this studio makes. An attachment is already whatever the
