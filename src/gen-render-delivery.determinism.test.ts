@@ -239,6 +239,52 @@ const shortFixtureSpec: SceneSpec = {
   ],
 };
 
+// Task: fix the shipped defect where the capture page was hardcoded to
+// portrait regardless of which of the three declared aspects a generated
+// scene actually used. A minimal 16:9 fixture (two frames, one text
+// element -- the effects/asset/palette matrix is already exercised above
+// by the 9:16 fixture, so this is one extra render, not a repeat of that
+// whole matrix) drives a real capture end to end and checks the delivered
+// video's own ffprobe-reported dimensions, not just the markup.
+const landscapeFixtureSpec: SceneSpec = {
+  schema: "scene-spec-v1",
+  mode: "SWAP",
+  canvas: {
+    width: CANVAS["16:9"].width,
+    height: CANVAS["16:9"].height,
+    fps: DELIVERY_FPS,
+    frameCount: 2,
+  },
+  palette: {
+    hero: "#ff5500",
+    cool: "#3355ff",
+    warm: "#ffaa33",
+    background: "#101018",
+  },
+  assets: [],
+  beats: [
+    {
+      beatId: "beat-only",
+      startFrame: 0,
+      endFrame: 2,
+      shot: "hard-cut",
+      elements: [
+        {
+          elementId: "headline",
+          kind: "text",
+          content: "LANDSCAPE",
+          box: { x: 100, y: 400, width: 1700, height: 200 },
+          keyframes: [
+            { frame: 0, opacity: 1, ease: "linear" },
+            { frame: 1, opacity: 1, ease: "linear" },
+          ],
+          effects: [],
+        },
+      ],
+    },
+  ],
+};
+
 describe("renderGeneratedDelivery determinism", () => {
   it.skipIf(!canRunRealBrowser)(
     "produces identical frame hashes across two runs",
@@ -291,5 +337,28 @@ describe("renderGeneratedDelivery determinism", () => {
       }
     },
     120_000,
+  );
+
+  it.skipIf(!canRunRealBrowser)(
+    "renders a 16:9 scene at 1920x1080, not the portrait default",
+    async () => {
+      const workspace = await mkdtemp(join(tmpdir(), "rvs-gen-landscape-"));
+      try {
+        const report = await renderGeneratedDelivery(
+          {
+            spec: landscapeFixtureSpec,
+            assetPaths: new Map(),
+            outPath: join(workspace, "out.mp4"),
+          },
+          { chromePath, fontPath },
+        );
+        expect(report.qc["width"]).toBe(CANVAS["16:9"].width);
+        expect(report.qc["height"]).toBe(CANVAS["16:9"].height);
+        expect(report.qc["status"]).toBe("PASS");
+      } finally {
+        await rm(workspace, { recursive: true, force: true });
+      }
+    },
+    60_000,
   );
 });
