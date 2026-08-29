@@ -7,11 +7,13 @@
   "scripts": {
     "build": "tsc",
     "test": "vitest",
-    "format": "prettier --write --ignore-unknown --no-error-on-unmatched-pattern '*.*' 'compiler/**/*' 'src/**/*'",
-    "format:check": "prettier --check --ignore-unknown --no-error-on-unmatched-pattern '*.*' 'compiler/**/*' 'src/**/*'",
+    "format": "prettier --write --ignore-unknown --no-error-on-unmatched-pattern '*.*' 'compiler/**/*' 'scripts/**/*' 'src/**/*'",
+    "format:check": "prettier --check --ignore-unknown --no-error-on-unmatched-pattern '*.*' 'compiler/**/*' 'scripts/**/*' 'src/**/*'",
     "compiler:smoke": "vitest run src/compiler-orchestrator.test.ts",
     "start": "node dist/index.js",
     "dev": "pnpm build && pnpm start",
+    "up:generators": "node scripts/up-generators.mjs",
+    "up:worker": "node scripts/up-worker.mjs",
     "compose:cpu": "docker compose run --rm worker",
     "compose:gpu": "docker compose -f docker-compose.yml -f docker-compose.gpu.yml run --rm worker"
   },
