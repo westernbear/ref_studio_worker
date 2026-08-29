@@ -38,6 +38,8 @@ describe("buildNativeScenePackage", () => {
         await readFile(join(result.directory, "manifest.json"), "utf8"),
       ) as { files: Readonly<Record<string, string>> };
       expect(html).not.toMatch(/https?:|file:/u);
+      expect(html).toContain('id="play-pause"');
+      expect(html).toContain('id="frame-scrub"');
       expect(
         JSON.parse(
           await readFile(join(result.directory, "scene.json"), "utf8"),

@@ -179,6 +179,7 @@ export type WorkflowPipelineDependencies = Readonly<{
     | "uploadEvidenceVideo"
     | "uploadSafetySample"
     | "uploadGeneratedArtifact"
+    | "uploadScenePackageArtifact"
     | "downloadAttachment"
     | "downloadSceneAsset"
     | "uploadSceneAsset"
@@ -458,6 +459,14 @@ export const createWorkflowJobHandler = (
             outputPath,
             generatedSignal,
           );
+          if (!report.scenePackageArchivePath)
+            throw new Error("SCENE_PACKAGE_ARCHIVE_MISSING");
+          const scenePackage =
+            await dependencies.api.uploadScenePackageArtifact(
+              job.jobId,
+              report.scenePackageArchivePath,
+              generatedSignal,
+            );
           const safetySample = await dependencies.api.uploadSafetySample(
             job.jobId,
             report.safetySampleFramePath,
@@ -467,6 +476,7 @@ export const createWorkflowJobHandler = (
             protocol: "rvs.worker.v1",
             phase: "gen-render",
             artifactId: artifact.artifactId,
+            scenePackageArtifactId: scenePackage.artifactId,
             safetySampleArtifactId: safetySample.artifactId,
             report: {
               schema: report.schema,

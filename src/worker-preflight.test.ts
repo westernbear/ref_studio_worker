@@ -41,10 +41,12 @@ describe("worker runtime preflight", () => {
       renderer: "ANGLE SwiftShader",
       ffmpeg: true,
       ffprobe: true,
+      tar: true,
       compilerModels: true,
     });
     expect(report.runtimeDigest).toMatch(/^[a-f0-9]{64}$/u);
-    expect(commands).toHaveLength(4);
+    expect(commands).toContain("tar --version");
+    expect(commands).toHaveLength(5);
   });
 
   it("derives a deterministic digest from every runtime identity input", async () => {
@@ -54,6 +56,7 @@ describe("worker runtime preflight", () => {
         font?: string;
         ffmpeg?: string;
         ffprobe?: string;
+        tar?: string;
         rendererFrame?: string;
       }>,
     ): Promise<string> =>
@@ -66,7 +69,9 @@ describe("worker runtime preflight", () => {
                 ? (overrides.ffprobe ?? "ffprobe-v1")
                 : command.includes("ffmpeg")
                   ? (overrides.ffmpeg ?? "ffmpeg-v1")
-                  : "models-ok",
+                  : command === "tar"
+                    ? (overrides.tar ?? "tar-v1")
+                    : "models-ok",
             stderr: "",
           }),
           captureFrames: async () => ({
@@ -100,6 +105,7 @@ describe("worker runtime preflight", () => {
       { font: "font-v2" },
       { ffmpeg: "ffmpeg-v2" },
       { ffprobe: "ffprobe-v2" },
+      { tar: "tar-v2" },
       { rendererFrame: "b".repeat(64) },
     ])
       expect(await digest(changed)).not.toBe(baseline);

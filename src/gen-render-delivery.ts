@@ -8,7 +8,6 @@ import {
   validateSceneSpec,
   type SceneSpec,
 } from "./contracts/index.js";
-import { z } from "zod";
 import {
   captureBrowserFrames,
   type BrowserCaptureInput,
@@ -19,6 +18,8 @@ import type { RenderDeliveryDependencies } from "./render-delivery.js";
 import { createGeneratedRenderApp } from "./render-app/generated.js";
 import { compileSceneSpec } from "./scene/spec-compile.js";
 import { buildNativeScenePackage } from "./native-scene-package.js";
+import { archiveScenePackage } from "./scene-package-archive.js";
+import { assembleGeneratedVideo } from "./generated-video-delivery.js";
 
 export type GeneratedRenderReport = Readonly<{
   schema: "rvs.gen-render-report.v1";
@@ -43,21 +44,8 @@ export type GeneratedRenderReport = Readonly<{
   // A local worker-filesystem path, for the content-safety sample upload --
   // never sent to the API, which keeps its report schema strict.
   safetySampleFramePath: string;
-  scenePackagePath?: string;
+  scenePackageArchivePath?: string;
 }>;
-
-const fraction = (value: string): number => {
-  const [numerator, denominator] = value.split("/").map(Number);
-  if (
-    numerator === undefined ||
-    denominator === undefined ||
-    !Number.isFinite(numerator) ||
-    !Number.isFinite(denominator) ||
-    denominator === 0
-  )
-    return Number.NaN;
-  return numerator / denominator;
-};
 
 // CANVAS_MISMATCH is a render-time token (ruling 5), not one of
 // validateSceneSpec's spec tokens: it asks whether this canvas is one a real
@@ -69,84 +57,6 @@ const isDeclaredCanvas = (canvas: SceneSpec["canvas"]): boolean =>
     (dimensions) =>
       dimensions.width === canvas.width && dimensions.height === canvas.height,
   );
-
-const Probe = z.object({
-  format: z.object({ duration: z.string() }),
-  streams: z.array(
-    z
-      .object({
-        codec_type: z.string(),
-        codec_name: z.string(),
-        width: z.number().int().positive().optional(),
-        height: z.number().int().positive().optional(),
-        pix_fmt: z.string().optional(),
-        avg_frame_rate: z.string().optional(),
-        nb_read_frames: z.string().optional(),
-        profile: z.string().optional(),
-        level: z.number().int().optional(),
-        channels: z.number().int().positive().optional(),
-        sample_rate: z.string().optional(),
-      })
-      .passthrough(),
-  ),
-  frames: z.array(
-    z.object({
-      media_type: z.string(),
-      key_frame: z.number().int().min(0).max(1),
-    }),
-  ),
-});
-
-function validateGeneratedDelivery(
-  raw: string,
-  canvas: SceneSpec["canvas"],
-): Record<string, unknown> {
-  const probe = Probe.parse(JSON.parse(raw));
-  const video = probe.streams.find((stream) => stream.codec_type === "video");
-  const duration = Number(probe.format.duration);
-  const audio = probe.streams.find((stream) => stream.codec_type === "audio");
-  const keyFrames = probe.frames
-    .filter((frame) => frame.media_type === "video")
-    .flatMap((frame, index) => (frame.key_frame === 1 ? [index] : []));
-  const expectedDuration = canvas.frameCount / canvas.fps;
-  if (
-    !video ||
-    video.codec_name !== "h264" ||
-    video.pix_fmt !== "yuv420p" ||
-    video.width !== canvas.width ||
-    video.height !== canvas.height ||
-    fraction(video.avg_frame_rate ?? "") !== canvas.fps ||
-    Number(video.nb_read_frames) !== canvas.frameCount ||
-    video.profile !== "High" ||
-    video.level !== 41 ||
-    !audio ||
-    audio.codec_name !== "aac" ||
-    audio.profile !== "LC" ||
-    audio.channels !== 2 ||
-    audio.sample_rate !== "48000" ||
-    keyFrames.some((frame, index) => frame !== index * 60) ||
-    keyFrames.length !== Math.ceil(canvas.frameCount / 60) ||
-    !Number.isFinite(duration) ||
-    Math.abs(duration - expectedDuration) > 0.05
-  )
-    throw new Error("GENERATED_DELIVERY_QC_FAILED");
-  return {
-    status: "PASS",
-    width: video.width,
-    height: video.height,
-    fps: canvas.fps,
-    frameCount: canvas.frameCount,
-    durationMs: Number.isFinite(duration) ? Math.round(duration * 1_000) : null,
-    videoCodec: video.codec_name,
-    videoProfile: "high",
-    videoLevel: "4.1",
-    pixelFormat: video.pix_fmt,
-    colorSpace: "bt709",
-    audioCodec: "aac",
-    audioProfile: "aac_low",
-    audioTargetBitRate: 192_000,
-  };
-}
 
 export async function renderGeneratedDelivery(
   input: Readonly<{
@@ -230,88 +140,16 @@ export async function renderGeneratedDelivery(
   };
   const captureReport: BrowserCaptureReport = await capture(captureInput);
 
-  const durationSec = canvas.frameCount / canvas.fps;
-  await command(
-    process.env.RVS_FFMPEG_PATH ?? "ffmpeg",
-    [
-      "-nostdin",
-      "-y",
-      "-framerate",
-      String(canvas.fps),
-      "-start_number",
-      "0",
-      "-i",
-      join(framesDirectory, "frame-%06d.png"),
-      "-f",
-      "lavfi",
-      "-i",
-      "anullsrc=channel_layout=stereo:sample_rate=48000",
-      "-map",
-      "0:v:0",
-      "-map",
-      "1:a:0",
-      "-frames:v",
-      String(canvas.frameCount),
-      "-t",
-      String(durationSec),
-      "-c:v",
-      "libx264",
-      "-profile:v",
-      "high",
-      "-level:v",
-      "4.1",
-      "-preset",
-      "medium",
-      "-crf",
-      "18",
-      "-g",
-      "60",
-      "-keyint_min",
-      "60",
-      "-sc_threshold",
-      "0",
-      "-flags",
-      "+cgop",
-      "-x264-params",
-      "colorprim=bt709:transfer=bt709:colormatrix=bt709",
-      "-pix_fmt",
-      "yuv420p",
-      "-colorspace",
-      "bt709",
-      "-color_primaries",
-      "bt709",
-      "-color_trc",
-      "bt709",
-      "-c:a",
-      "aac",
-      "-profile:a",
-      "aac_low",
-      "-b:a",
-      "192k",
-      "-movflags",
-      "+faststart",
-      input.outPath,
-    ],
-    { cwd: workspace, signal },
+  const qc = await assembleGeneratedVideo(
+    {
+      canvas,
+      framesDirectory,
+      outputPath: input.outPath,
+      workspace,
+      signal,
+    },
+    command,
   );
-
-  const probe = await command(
-    process.env.RVS_FFPROBE_PATH ?? "ffprobe",
-    [
-      "-v",
-      "error",
-      "-count_frames",
-      "-show_streams",
-      "-show_format",
-      "-show_entries",
-      "format=duration:stream=codec_type,codec_name,profile,level,width,height,pix_fmt,avg_frame_rate,nb_read_frames,channels,sample_rate:frame=media_type,key_frame",
-      "-of",
-      "json",
-      input.outPath,
-    ],
-    { cwd: workspace, signal },
-  );
-  const qc = validateGeneratedDelivery(probe.stdout, canvas);
 
   const scenePackage = input.scenePackagePath
     ? await buildNativeScenePackage({
@@ -339,6 +177,16 @@ export async function renderGeneratedDelivery(
         },
       })
     : undefined;
+  const scenePackageArchivePath = scenePackage
+    ? `${scenePackage.directory}.tar`
+    : undefined;
+  if (scenePackage && scenePackageArchivePath)
+    await archiveScenePackage(
+      scenePackage.directory,
+      scenePackageArchivePath,
+      signal,
+      command,
+    );
 
   const outputHash = createHash("sha256");
   let outputBytes = 0;
@@ -368,7 +216,7 @@ export async function renderGeneratedDelivery(
       framesDirectory,
       `frame-${String(Math.floor(canvas.frameCount / 2)).padStart(6, "0")}.png`,
     ),
-    ...(scenePackage ? { scenePackagePath: scenePackage.directory } : {}),
+    ...(scenePackageArchivePath ? { scenePackageArchivePath } : {}),
   };
 }
 

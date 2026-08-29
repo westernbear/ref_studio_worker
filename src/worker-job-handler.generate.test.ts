@@ -115,6 +115,13 @@ const api = () => ({
       sizeBytes: (await readFile(sourcePath)).byteLength,
     }),
   ),
+  uploadScenePackageArtifact: vi.fn(
+    async (_jobId: string, sourcePath: string) => ({
+      artifactId: "scenepackage-a",
+      sha256: sha256(await readFile(sourcePath)),
+      sizeBytes: (await readFile(sourcePath)).byteLength,
+    }),
+  ),
   downloadAttachment: vi.fn(
     async (_jobId: string, _attachmentId: string, destinationPath: string) => {
       await writeFile(destinationPath, logoBytes);
@@ -176,6 +183,7 @@ const generatedReport = (outPath: string) => ({
   },
   qc: { status: "PASS" },
   safetySampleFramePath: `${outPath}.sample.png`,
+  scenePackageArchivePath: `${outPath}.scene-package.tar`,
 });
 
 const signal = new AbortController().signal;
@@ -529,6 +537,7 @@ describe("the gen-render worker phase", () => {
   const renderGenerated: WorkflowPipelineDependencies["renderGenerated"] =
     vi.fn(async ({ outPath }) => {
       await writeFile(outPath, "generated-mp4");
+      await writeFile(`${outPath}.scene-package.tar`, "scene-package");
       return generatedReport(outPath);
     });
 
@@ -564,6 +573,7 @@ describe("the gen-render worker phase", () => {
       protocol: "rvs.worker.v1",
       phase: "gen-render",
       artifactId: "genartifact-a",
+      scenePackageArtifactId: "scenepackage-a",
       safetySampleArtifactId: "safetysample-a",
     });
     // The wire report carries the job/attempt this render belongs to, and
@@ -574,6 +584,12 @@ describe("the gen-render worker phase", () => {
       attemptId: "attempt-a",
     });
     expect(result["report"]).not.toHaveProperty("safetySampleFramePath");
+    expect(result["report"]).not.toHaveProperty("scenePackageArchivePath");
+    expect(fake.uploadScenePackageArtifact).toHaveBeenCalledWith(
+      "job-a",
+      expect.stringMatching(/scene-package\.tar$/u),
+      expect.any(AbortSignal),
+    );
   });
 
   it("refuses an asset whose bytes are not the ones the API bound", async () => {

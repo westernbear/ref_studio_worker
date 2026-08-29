@@ -109,6 +109,11 @@ export type WorkerApi = Readonly<{
     sourcePath: string,
     signal: AbortSignal,
   ): Promise<ArtifactUpload>;
+  uploadScenePackageArtifact(
+    jobId: string,
+    sourcePath: string,
+    signal: AbortSignal,
+  ): Promise<ArtifactUpload>;
   // The generate track's three extra transfers. Brand attachments live in
   // the API's memory, so the `assets` phase has no other way to read one;
   // resolved assets are stored by the API so the `gen-render` phase need
@@ -345,6 +350,7 @@ export function createWorkerApi(
     kind:
       | "artifact"
       | "generated-artifact"
+      | "artifacts/scene-package"
       | "preview-artifact"
       | "preview-labeled-artifact"
       | "evidence-video-artifact"
@@ -579,6 +585,14 @@ export function createWorkerApi(
       upload(jobId, "safety-sample-artifact", sourcePath, signal, "image/png"),
     uploadGeneratedArtifact: (jobId, sourcePath, signal) =>
       upload(jobId, "generated-artifact", sourcePath, signal),
+    uploadScenePackageArtifact: (jobId, sourcePath, signal) =>
+      upload(
+        jobId,
+        "artifacts/scene-package",
+        sourcePath,
+        signal,
+        "application/x-tar",
+      ),
     downloadAttachment: (jobId, attachmentId, destinationPath, signal) =>
       downloadFile(
         `${prefix}/jobs/${encodeURIComponent(jobId)}/attachments/${encodeURIComponent(attachmentId)}`,

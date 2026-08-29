@@ -60,10 +60,11 @@ export async function buildNativeScenePackage(
   }).replaceAll("</script", "<\\/script");
   const html = `<!doctype html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width">
-<style>@font-face{font-family:RvsLocal;src:url("assets/${fontName}")}html,body,#scene{margin:0;width:100%;height:100%;overflow:hidden;background:${input.scene.palette.background}}body{font-family:RvsLocal,sans-serif}svg{width:100%;height:100%}</style></head>
-<body><div id="scene"></div><script id="scene-data" type="application/json">${runtimeData}</script><script>
-const data=JSON.parse(document.getElementById("scene-data").textContent);const scene=document.getElementById("scene");let start;
-const draw=(now)=>{start??=now;const index=Math.min(data.frames.length-1,Math.floor((now-start)*data.fps/1000));scene.innerHTML=data.frames[index].markup;if(index<data.frames.length-1)requestAnimationFrame(draw)};requestAnimationFrame(draw);
+<style>@font-face{font-family:RvsLocal;src:url("assets/${fontName}")}html,body{margin:0;width:100%;height:100%;overflow:hidden;background:${input.scene.palette.background}}body{font-family:RvsLocal,sans-serif}#scene{width:100%;height:calc(100% - 48px)}svg{width:100%;height:100%}#controls{height:48px;display:flex;gap:12px;align-items:center;padding:0 12px;background:#18181c;color:#fff}button,input{min-height:44px}input{flex:1}</style></head>
+<body><div id="scene"></div><div id="controls"><button id="play-pause" type="button">Play</button><label for="frame-scrub">Frame</label><input id="frame-scrub" type="range" min="0" max="${Math.max(0, frames.length - 1)}" value="0"><output id="frame-number">0</output></div><script id="scene-data" type="application/json">${runtimeData}</script><script>
+const data=JSON.parse(document.getElementById("scene-data").textContent),scene=document.getElementById("scene"),play=document.getElementById("play-pause"),scrub=document.getElementById("frame-scrub"),number=document.getElementById("frame-number");let frame=0,playing=false,last=0;
+const draw=()=>{scene.innerHTML=data.frames[frame].markup;scrub.value=frame;number.value=frame};const tick=(now)=>{if(!playing)return;if(now-last>=1000/data.fps){frame=(frame+1)%data.frames.length;last=now;draw()}requestAnimationFrame(tick)};
+play.addEventListener("click",()=>{playing=!playing;play.textContent=playing?"Pause":"Play";if(playing)requestAnimationFrame(tick)});scrub.addEventListener("input",()=>{playing=false;play.textContent="Play";frame=Number(scrub.value);draw()});draw();
 </script></body></html>`;
   if (/\b(?:https?:|file:|\/\/)/iu.test(html))
     throw new Error("SCENE_PACKAGE_EXTERNAL_URL");
