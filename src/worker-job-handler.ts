@@ -443,7 +443,13 @@ export const createWorkflowJobHandler = (
           // even slow enough to matter. Do this only once a real job's
           // re-render latency has been measured and found to need it.
           const report = await renderGenerated(
-            { spec, assetPaths, outPath: outputPath },
+            {
+              spec,
+              assetPaths,
+              outPath: outputPath,
+              signal: generatedSignal,
+              scenePackagePath: join(workspace, "scene-package"),
+            },
             { runCommand: command },
           );
           await progress("upload", 0.95, frameCount, frameCount);

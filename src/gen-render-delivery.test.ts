@@ -61,8 +61,21 @@ const probe = {
       pix_fmt: "yuv420p",
       avg_frame_rate: `${DELIVERY_FPS}/1`,
       nb_read_frames: "30",
+      profile: "High",
+      level: 41,
+    },
+    {
+      codec_type: "audio",
+      codec_name: "aac",
+      profile: "LC",
+      channels: 2,
+      sample_rate: "48000",
     },
   ],
+  frames: Array.from({ length: 30 }, (_, frame) => ({
+    media_type: "video",
+    key_frame: frame === 0 ? 1 : 0,
+  })),
 };
 
 const fakeCapture = async (
@@ -87,6 +100,37 @@ const fakeCapture = async (
 };
 
 describe("renderGeneratedDelivery", () => {
+  it("forwards cancellation to Chrome and ffmpeg", async () => {
+    // Given
+    const workspace = await mkdtemp(join(tmpdir(), "rvs-gen-delivery-"));
+    const controller = new AbortController();
+    let capturedSignal: AbortSignal | undefined;
+    try {
+      // When
+      await renderGeneratedDelivery(
+        {
+          spec: shortFixtureSpec,
+          assetPaths: new Map(),
+          outPath: join(workspace, "out.mp4"),
+          signal: controller.signal,
+        },
+        {
+          captureFrames: async (input) => {
+            capturedSignal = input.signal;
+            controller.abort();
+            throw new Error("WORKER_JOB_CANCELLED");
+          },
+        },
+      ).catch(() => undefined);
+
+      // Then
+      expect(capturedSignal).toBe(controller.signal);
+      expect(capturedSignal?.aborted).toBe(true);
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
   it("renders the fixture spec to an mp4 with one hash per frame", async () => {
     const workspace = await mkdtemp(join(tmpdir(), "rvs-gen-delivery-"));
     try {
@@ -100,7 +144,12 @@ describe("renderGeneratedDelivery", () => {
         return { stdout: "", stderr: "" };
       };
       const report = await renderGeneratedDelivery(
-        { spec: shortFixtureSpec, assetPaths: new Map(), outPath },
+        {
+          spec: shortFixtureSpec,
+          assetPaths: new Map(),
+          outPath,
+          signal: new AbortController().signal,
+        },
         { captureFrames: fakeCapture, runCommand: fakeFfmpeg },
       );
 
@@ -108,6 +157,38 @@ describe("renderGeneratedDelivery", () => {
       expect(report.specDigest).toBe(compileSceneSpec(shortFixtureSpec).digest);
       expect(report.schema).toBe("rvs.gen-render-report.v1");
       expect(report.qc["status"]).toBe("PASS");
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a delivery whose audio is not AAC LC", async () => {
+    // Given
+    const workspace = await mkdtemp(join(tmpdir(), "rvs-gen-delivery-"));
+    try {
+      const invalidProbe = structuredClone(probe);
+      invalidProbe.streams[1]!.codec_name = "mp3";
+      const fakeFfmpeg: CommandRunner = async (command, args) => {
+        if (command.endsWith("ffprobe"))
+          return { stdout: JSON.stringify(invalidProbe), stderr: "" };
+        const output = args.at(-1);
+        if (!output) throw new Error("TEST_OUTPUT_PATH_MISSING");
+        await writeFile(output, "media");
+        return { stdout: "", stderr: "" };
+      };
+
+      // When / Then
+      await expect(
+        renderGeneratedDelivery(
+          {
+            spec: shortFixtureSpec,
+            assetPaths: new Map(),
+            outPath: join(workspace, "out.mp4"),
+            signal: new AbortController().signal,
+          },
+          { captureFrames: fakeCapture, runCommand: fakeFfmpeg },
+        ),
+      ).rejects.toThrow(/GENERATED_DELIVERY_QC_FAILED/);
     } finally {
       await rm(workspace, { recursive: true, force: true });
     }
@@ -156,7 +237,12 @@ describe("renderGeneratedDelivery", () => {
 
       let capturedMarkup: string | undefined;
       const report = await renderGeneratedDelivery(
-        { spec: colourSpec, assetPaths: new Map(), outPath },
+        {
+          spec: colourSpec,
+          assetPaths: new Map(),
+          outPath,
+          signal: new AbortController().signal,
+        },
         {
           captureFrames: async (captureInput) => {
             capturedMarkup = captureInput.frames[0]?.markup;
@@ -223,6 +309,7 @@ describe("renderGeneratedDelivery", () => {
           spec: imageSpec,
           assetPaths: new Map([["hero-shot", imagePath]]),
           outPath,
+          signal: new AbortController().signal,
         },
         {
           captureFrames: async (captureInput) => {
@@ -262,6 +349,7 @@ describe("renderGeneratedDelivery", () => {
             },
             assetPaths: new Map(),
             outPath,
+            signal: new AbortController().signal,
           },
           deps,
         ),

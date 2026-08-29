@@ -18,6 +18,7 @@ import { runCommand, type CommandRunner } from "./process-runner.js";
 import type { RenderDeliveryDependencies } from "./render-delivery.js";
 import { createGeneratedRenderApp } from "./render-app/generated.js";
 import { compileSceneSpec } from "./scene/spec-compile.js";
+import { buildNativeScenePackage } from "./native-scene-package.js";
 
 export type GeneratedRenderReport = Readonly<{
   schema: "rvs.gen-render-report.v1";
@@ -42,6 +43,7 @@ export type GeneratedRenderReport = Readonly<{
   // A local worker-filesystem path, for the content-safety sample upload --
   // never sent to the API, which keeps its report schema strict.
   safetySampleFramePath: string;
+  scenePackagePath?: string;
 }>;
 
 const fraction = (value: string): number => {
@@ -80,8 +82,18 @@ const Probe = z.object({
         pix_fmt: z.string().optional(),
         avg_frame_rate: z.string().optional(),
         nb_read_frames: z.string().optional(),
+        profile: z.string().optional(),
+        level: z.number().int().optional(),
+        channels: z.number().int().positive().optional(),
+        sample_rate: z.string().optional(),
       })
       .passthrough(),
+  ),
+  frames: z.array(
+    z.object({
+      media_type: z.string(),
+      key_frame: z.number().int().min(0).max(1),
+    }),
   ),
 });
 
@@ -92,6 +104,11 @@ function validateGeneratedDelivery(
   const probe = Probe.parse(JSON.parse(raw));
   const video = probe.streams.find((stream) => stream.codec_type === "video");
   const duration = Number(probe.format.duration);
+  const audio = probe.streams.find((stream) => stream.codec_type === "audio");
+  const keyFrames = probe.frames
+    .filter((frame) => frame.media_type === "video")
+    .flatMap((frame, index) => (frame.key_frame === 1 ? [index] : []));
+  const expectedDuration = canvas.frameCount / canvas.fps;
   if (
     !video ||
     video.codec_name !== "h264" ||
@@ -99,7 +116,18 @@ function validateGeneratedDelivery(
     video.width !== canvas.width ||
     video.height !== canvas.height ||
     fraction(video.avg_frame_rate ?? "") !== canvas.fps ||
-    Number(video.nb_read_frames) !== canvas.frameCount
+    Number(video.nb_read_frames) !== canvas.frameCount ||
+    video.profile !== "High" ||
+    video.level !== 41 ||
+    !audio ||
+    audio.codec_name !== "aac" ||
+    audio.profile !== "LC" ||
+    audio.channels !== 2 ||
+    audio.sample_rate !== "48000" ||
+    keyFrames.some((frame, index) => frame !== index * 60) ||
+    keyFrames.length !== Math.ceil(canvas.frameCount / 60) ||
+    !Number.isFinite(duration) ||
+    Math.abs(duration - expectedDuration) > 0.05
   )
     throw new Error("GENERATED_DELIVERY_QC_FAILED");
   return {
@@ -125,6 +153,8 @@ export async function renderGeneratedDelivery(
     readonly spec: SceneSpec;
     readonly assetPaths: ReadonlyMap<string, string>;
     readonly outPath: string;
+    readonly signal: AbortSignal;
+    readonly scenePackagePath?: string;
   }>,
   dependencies: RenderDeliveryDependencies = {},
 ): Promise<GeneratedRenderReport> {
@@ -180,7 +210,7 @@ export async function renderGeneratedDelivery(
   const workspace = dirname(input.outPath);
   const framesDirectory = join(workspace, "gen-frames");
   await mkdir(framesDirectory, { recursive: true });
-  const signal = new AbortController().signal;
+  const signal = input.signal;
 
   const captureInput: BrowserCaptureInput = {
     workspace,
@@ -234,6 +264,14 @@ export async function renderGeneratedDelivery(
       "medium",
       "-crf",
       "18",
+      "-g",
+      "60",
+      "-keyint_min",
+      "60",
+      "-sc_threshold",
+      "0",
+      "-flags",
+      "+cgop",
       "-x264-params",
       "colorprim=bt709:transfer=bt709:colormatrix=bt709",
       "-pix_fmt",
@@ -266,7 +304,7 @@ export async function renderGeneratedDelivery(
       "-show_streams",
       "-show_format",
       "-show_entries",
-      "format=duration:stream=codec_type,codec_name,width,height,pix_fmt,avg_frame_rate,nb_read_frames",
+      "format=duration:stream=codec_type,codec_name,profile,level,width,height,pix_fmt,avg_frame_rate,nb_read_frames,channels,sample_rate:frame=media_type,key_frame",
       "-of",
       "json",
       input.outPath,
@@ -274,6 +312,33 @@ export async function renderGeneratedDelivery(
     { cwd: workspace, signal },
   );
   const qc = validateGeneratedDelivery(probe.stdout, canvas);
+
+  const scenePackage = input.scenePackagePath
+    ? await buildNativeScenePackage({
+        directory: input.scenePackagePath,
+        scene: input.spec,
+        assetPaths: input.assetPaths,
+        fontPath,
+        frames: renderedFrames,
+        capability: {
+          text: true,
+          image: true,
+          shape: true,
+          video: false,
+          rotation: false,
+          anchor: false,
+          perAxisScale: false,
+          parentTransform: false,
+          easing: true,
+        },
+        verification: {
+          status: "PASS",
+          frameSha256: captureReport.frameSha256,
+          repeatedFrameByteIdentity: captureReport.repeatedFrameByteIdentity,
+          qc,
+        },
+      })
+    : undefined;
 
   const outputHash = createHash("sha256");
   let outputBytes = 0;
@@ -303,6 +368,7 @@ export async function renderGeneratedDelivery(
       framesDirectory,
       `frame-${String(Math.floor(canvas.frameCount / 2)).padStart(6, "0")}.png`,
     ),
+    ...(scenePackage ? { scenePackagePath: scenePackage.directory } : {}),
   };
 }
 

@@ -190,6 +190,8 @@ const drawMarkup = (
     `x="${draw.box.x}" y="${draw.box.y}" width="${draw.box.width}" height="${draw.box.height}" opacity="${draw.opacity}"`;
   const asset =
     draw.assetRef !== undefined ? assetsById.get(draw.assetRef) : undefined;
+  if (draw.kind === "video")
+    throw new GeneratedRenderAppError("VIDEO_RENDER_UNSUPPORTED");
   // Item 1, the whole point of the material provider: an element whose
   // assetRef resolves to an image asset draws that image at its box,
   // stretched to fill it exactly (preserveAspectRatio="none" -- the box,
@@ -211,10 +213,6 @@ const drawMarkup = (
     const href = escapeXml(pathToFileURL(path).href);
     return `<image ${attributes} href="${href}" preserveAspectRatio="none" />`;
   }
-  // ponytail: video-kind assets are out of scope for this batch (only
-  // images resolve to real pixels -- see the image branch above). A
-  // video-referencing element falls through to the same fill-and-effects
-  // path a bare shape gets, below.
   if (draw.content !== undefined) {
     // Item 2: text must use the palette rather than defaulting -- an
     // explicit colour asset wins if the element names one, otherwise the

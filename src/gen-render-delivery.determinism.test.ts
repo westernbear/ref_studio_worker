@@ -345,6 +345,7 @@ describe("renderGeneratedDelivery determinism", () => {
             spec: shortFixtureSpec,
             assetPaths,
             outPath: join(workspaceA, "out.mp4"),
+            signal: new AbortController().signal,
           },
           deps,
         );
@@ -353,6 +354,7 @@ describe("renderGeneratedDelivery determinism", () => {
             spec: shortFixtureSpec,
             assetPaths,
             outPath: join(workspaceB, "out.mp4"),
+            signal: new AbortController().signal,
           },
           deps,
         );
@@ -382,6 +384,7 @@ describe("renderGeneratedDelivery determinism", () => {
             spec: landscapeFixtureSpec,
             assetPaths: new Map(),
             outPath: join(workspace, "out.mp4"),
+            signal: new AbortController().signal,
           },
           { chromePath, fontPath },
         );
