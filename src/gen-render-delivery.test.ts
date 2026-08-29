@@ -129,10 +129,11 @@ describe("renderGeneratedDelivery", () => {
         ...shortFixtureSpec,
         assets: [
           {
-            assetId: "brand-hero",
+            assetId: "color-pill",
             kind: "color",
-            origin: "evidence",
+            origin: "generated",
             ref: "#ff5500",
+            provenance: { prompt: "a warm coral pill" },
           },
         ],
         beats: [
@@ -143,7 +144,7 @@ describe("renderGeneratedDelivery", () => {
               {
                 elementId: "wash",
                 kind: "shape",
-                assetRef: "brand-hero",
+                assetRef: "color-pill",
                 box: { x: 0, y: 0, width: 1080, height: 1920 },
                 keyframes: [],
                 effects: [],

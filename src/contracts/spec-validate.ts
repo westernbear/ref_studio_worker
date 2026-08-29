@@ -137,7 +137,7 @@ export function validateSceneSpec(
           "GENERATED_ASSET_WITHOUT_PROVENANCE",
           `asset ${asset.assetId} records no prompt for what it is`,
         );
-      else if (options.requireGeneratedOutput) {
+      else if (options.requireGeneratedOutput && asset.kind !== "color") {
         if (!asset.provenance.tool)
           fail(
             "GENERATED_ASSET_WITHOUT_PROVENANCE",
