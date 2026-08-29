@@ -10,6 +10,7 @@ export type FramePlan = {
   readonly frame: number;
   readonly draws: readonly {
     readonly elementId: string;
+    readonly kind: "text" | "image" | "shape" | "video";
     readonly box: { x: number; y: number; width: number; height: number };
     readonly opacity: number;
     readonly assetRef?: string;
@@ -111,6 +112,7 @@ export function compileSceneSpec(spec: SceneSpec): SpecCompilation {
         const dy = valueAt(element.keyframes, frame, "y", 0);
         draws.push({
           elementId: element.elementId,
+          kind: element.kind,
           box: {
             x: element.box.x + dx,
             y: element.box.y + dy,

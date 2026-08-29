@@ -125,6 +125,22 @@ describe("createGeneratedRenderApp", () => {
     expect(markup.slice(tagStart, tagStart + 6)).toBe("<image");
   });
 
+  it("refuses a video element instead of drawing a shape fallback", () => {
+    const spec = withElement(fixtureSpec, {
+      kind: "video",
+      content: undefined,
+      assetRef: "hero-shot",
+    });
+    expect(() =>
+      createGeneratedRenderApp(
+        compileSceneSpec(spec),
+        [],
+        spec.assets,
+        new Map([["hero-shot", "/tmp/hero-shot.png"]]),
+      ).renderFrame(0),
+    ).toThrow(/VIDEO_RENDER_UNSUPPORTED/);
+  });
+
   it("gives a shape with no colour-asset override a visible, palette-derived fill", () => {
     const spec: SceneSpec = {
       ...fixtureSpec,

@@ -1,4 +1,7 @@
 import { createHash } from "node:crypto";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { createWorkerApi, WorkerApiError } from "./worker-api.js";
 import type { WorkerConfig } from "./worker-config.js";
@@ -22,6 +25,62 @@ const request: MaterialRequest = {
   seed: 7,
   canvas: { width: 1080, height: 1920, fps: 30, frameCount: 60 },
 };
+
+describe("WorkerApi.uploadScenePackageArtifact", () => {
+  it("uploads the archive to the scene-package route", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "rvs-scene-upload-"));
+    try {
+      const archive = join(workspace, "scene-package.tar");
+      await writeFile(archive, "archive");
+      const requests: Request[] = [];
+      const api = createWorkerApi(config, async (input, init) => {
+        const sent = new Request(input, init);
+        requests.push(sent);
+        const path = new URL(sent.url).pathname;
+        if (path.endsWith("/register"))
+          return Response.json({
+            workerId: "worker-test",
+            sessionToken: "session-token",
+          });
+        if (path.endsWith("/claim"))
+          return Response.json({
+            job: {
+              jobId: "job-a",
+              attemptId: "attempt-a",
+              leaseToken: "lease-token",
+              leaseExpiresAt: "2099-08-23T01:00:00.000Z",
+              payload: {},
+            },
+          });
+        if (path.endsWith("/artifacts/scene-package"))
+          return Response.json({
+            artifactId: "scene-package-a",
+            sha256: "a".repeat(64),
+            sizeBytes: 7,
+          });
+        throw new Error(`unexpected request: ${path}`);
+      });
+      await api.register();
+      await api.claim();
+      requests.length = 0;
+
+      await api.uploadScenePackageArtifact(
+        "job-a",
+        archive,
+        new AbortController().signal,
+      );
+
+      expect(new URL(requests[0]!.url).pathname).toBe(
+        "/v1/workers/worker-test/jobs/job-a/artifacts/scene-package",
+      );
+      expect(requests[0]?.headers.get("content-type")).toBe(
+        "application/x-tar",
+      );
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+});
 
 // Registers and claims a job so requestMaterial has a session token and a
 // lease to attach, the same as every other authenticated call this client

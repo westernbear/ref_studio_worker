@@ -18,6 +18,7 @@ export type WorkerPreflightReport = Readonly<{
   repeatedFrameByteIdentity: true;
   ffmpeg: true;
   ffprobe: true;
+  tar: true;
   compilerModels: true;
   runtimeDigest: string;
 }>;
@@ -62,6 +63,11 @@ export async function runWorkerPreflight(
       ["-version"],
       options,
     );
+    const tar = await command(
+      process.env.RVS_TAR_PATH ?? "tar",
+      ["--version"],
+      options,
+    );
     await command(
       process.env.RVS_PYTHON_PATH ?? "python3.12",
       ["-c", "from compiler.pipeline import verify_models; verify_models()"],
@@ -100,6 +106,7 @@ export async function runWorkerPreflight(
       repeatedFrameByteIdentity: browser.repeatedFrameByteIdentity,
       ffmpeg: true as const,
       ffprobe: true as const,
+      tar: true as const,
       compilerModels: true as const,
     };
     const identity = {
@@ -110,6 +117,7 @@ export async function runWorkerPreflight(
       fontSha256: createHash("sha256").update(font).digest("hex"),
       ffmpegVersion: ffmpeg.stdout.trim(),
       ffprobeVersion: ffprobe.stdout.trim(),
+      tarVersion: tar.stdout.trim(),
       rendererIdentity: createHash("sha256")
         .update(JSON.stringify(browser))
         .digest("hex"),
