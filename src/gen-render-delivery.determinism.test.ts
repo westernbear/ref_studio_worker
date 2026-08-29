@@ -325,9 +325,15 @@ describe("renderGeneratedDelivery determinism", () => {
       // (generated.ts), so for the two runs' markup to be byte-identical
       // the path itself has to be identical, exactly like fontPath already
       // is for both.
-      const workspaceA = await mkdtemp(join(tmpdir(), "rvs-gen-determinism-a-"));
-      const workspaceB = await mkdtemp(join(tmpdir(), "rvs-gen-determinism-b-"));
-      const assetDir = await mkdtemp(join(tmpdir(), "rvs-gen-determinism-asset-"));
+      const workspaceA = await mkdtemp(
+        join(tmpdir(), "rvs-gen-determinism-a-"),
+      );
+      const workspaceB = await mkdtemp(
+        join(tmpdir(), "rvs-gen-determinism-b-"),
+      );
+      const assetDir = await mkdtemp(
+        join(tmpdir(), "rvs-gen-determinism-asset-"),
+      );
       try {
         const heroShotPath = join(assetDir, "hero-shot.png");
         await writeFile(heroShotPath, makeSolidPng(64, 48, [255, 85, 0]));

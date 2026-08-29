@@ -243,7 +243,10 @@ const drawMarkup = (
 // control: an inline style attribute always wins over an external
 // stylesheet rule, and a plain stroke="none" presentation attribute
 // already satisfies that stylesheet's `:where(:not([stroke]))` opt-out.
-const backgroundMarkup = (canvas: SpecCompilation["canvas"], palette: SpecCompilation["palette"]): string =>
+const backgroundMarkup = (
+  canvas: SpecCompilation["canvas"],
+  palette: SpecCompilation["palette"],
+): string =>
   `<rect data-element-id="scene-background" x="0" y="0" width="${canvas.width}" height="${canvas.height}" fill="${escapeXml(palette.background)}" stroke="none" style="rx:0" />`;
 
 export function createGeneratedRenderApp(
@@ -254,7 +257,9 @@ export function createGeneratedRenderApp(
 ): { readonly renderFrame: (frame: number) => RenderedFrame } {
   validateLocalFonts(localFonts);
   validateAssetPaths(assetPaths);
-  const assetsById = new Map(assets.map((asset) => [asset.assetId, asset] as const));
+  const assetsById = new Map(
+    assets.map((asset) => [asset.assetId, asset] as const),
+  );
   const framesByIndex = new Map(
     compilation.frames.map((plan) => [plan.frame, plan] as const),
   );
@@ -263,7 +268,9 @@ export function createGeneratedRenderApp(
       throw new GeneratedRenderAppError("INVALID_FRAME");
     const plan = framesByIndex.get(frame);
     const nodes = (plan?.draws ?? [])
-      .map((draw) => drawMarkup(draw, compilation.palette, assetsById, assetPaths))
+      .map((draw) =>
+        drawMarkup(draw, compilation.palette, assetsById, assetPaths),
+      )
       .join("");
     return {
       frame,

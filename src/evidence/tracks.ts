@@ -224,7 +224,13 @@ const ocrTextTracks = (bundle: Record<string, unknown>): EvidenceTrack[] => {
     const { frame, confidence, text, bounds } = candidate;
     const box = readFrameBounds(
       Array.isArray(bounds) && bounds.length === 4
-        ? { frame, x: bounds[0], y: bounds[1], width: bounds[2], height: bounds[3] }
+        ? {
+            frame,
+            x: bounds[0],
+            y: bounds[1],
+            width: bounds[2],
+            height: bounds[3],
+          }
         : null,
     );
     if (!isNumber(frame) || !isNumber(confidence) || !isString(text) || !box)
@@ -246,7 +252,9 @@ const ocrTextTracks = (bundle: Record<string, unknown>): EvidenceTrack[] => {
   }));
 };
 
-const audioAnchorTracks = (bundle: Record<string, unknown>): EvidenceTrack[] => {
+const audioAnchorTracks = (
+  bundle: Record<string, unknown>,
+): EvidenceTrack[] => {
   const sceneInput = bundle["sceneInput"];
   const audio = isRecord(sceneInput) ? sceneInput["audio"] : null;
   const anchors = isRecord(audio) ? audio["anchors"] : null;
@@ -259,7 +267,7 @@ const audioAnchorTracks = (bundle: Record<string, unknown>): EvidenceTrack[] => 
       return {
         ownerId: isString(owner) ? owner : `audio-anchor-${index}`,
         kind: "audio-anchor",
-        label: isString(role) ? role : (isString(anchorId) ? anchorId : "cue"),
+        label: isString(role) ? role : isString(anchorId) ? anchorId : "cue",
         frames: [{ frame, confidence }],
       };
     })

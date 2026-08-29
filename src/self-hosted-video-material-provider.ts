@@ -184,7 +184,9 @@ async function retimeAlphaVideo(
       { cwd: workspace, signal },
     );
     const parsed = ProbeSchema.parse(JSON.parse(probe.stdout));
-    const video = parsed.streams.find((stream) => stream.codec_type === "video");
+    const video = parsed.streams.find(
+      (stream) => stream.codec_type === "video",
+    );
     if (
       !video ||
       video.codec_name !== "h264" ||
@@ -216,14 +218,24 @@ export function createSelfHostedVideoMaterialProvider(
           request.assetId,
           "RVS_WAN_ALPHA_BASE_URL is not configured for this deployment",
         );
-      const seed = request.seed ?? deriveMaterialSeed(request.assetId, request.prompt);
-      const native = await client(baseUrl, { prompt: request.prompt, seed }, signal);
+      const seed =
+        request.seed ?? deriveMaterialSeed(request.assetId, request.prompt);
+      const native = await client(
+        baseUrl,
+        { prompt: request.prompt, seed },
+        signal,
+      );
       const bytes = await retimeAlphaVideo(native, request.canvas, run, signal);
       const sha256 = createHash("sha256").update(bytes).digest("hex");
       return {
         bytes,
         contentType: "video/mp4" as const,
-        provenance: { tool: WAN_ALPHA_TOOL, prompt: request.prompt, seed, sha256 },
+        provenance: {
+          tool: WAN_ALPHA_TOOL,
+          prompt: request.prompt,
+          seed,
+          sha256,
+        },
       };
     },
   };

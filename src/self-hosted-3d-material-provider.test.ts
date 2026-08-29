@@ -50,7 +50,10 @@ const buildFakePng = (
 // A fake Blender: reads the args JSON file (the same way the real
 // render.py script would) to find out where to write, and writes a
 // fixture PNG there instead of actually rendering anything.
-const fakeBlender = (png: Uint8Array | ((argsPath: string) => Promise<Uint8Array>)): CommandRunner =>
+const fakeBlender =
+  (
+    png: Uint8Array | ((argsPath: string) => Promise<Uint8Array>),
+  ): CommandRunner =>
   async (command, args) => {
     const argsPath = args.at(-1) as string;
     const cfg = JSON.parse(await readFile(argsPath, "utf8")) as {
@@ -67,7 +70,7 @@ describe("buildBlenderScript", () => {
     expect(script).toContain('scene.cycles.device = "CPU"');
   });
   it("pins a fixed sample count with no adaptive sampling", () => {
-    expect(script).toContain("scene.cycles.samples = cfg[\"samples\"]");
+    expect(script).toContain('scene.cycles.samples = cfg["samples"]');
     expect(script).toContain("scene.cycles.use_adaptive_sampling = False");
   });
   it("disables the denoiser", () => {

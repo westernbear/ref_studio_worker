@@ -193,7 +193,9 @@ const palette = (
 ): Readonly<{ body: string | null; edge: string | null }> => {
   const stops = asset["palette"];
   const hex = Array.isArray(stops)
-    ? stops.filter((stop): stop is string => typeof stop === "string" && HEX.test(stop))
+    ? stops.filter(
+        (stop): stop is string => typeof stop === "string" && HEX.test(stop),
+      )
     : [];
   if (hex.length === 0) return { body: null, edge: null };
   return {

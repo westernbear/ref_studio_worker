@@ -100,21 +100,32 @@ describe("renderPage canvas sizing", () => {
       expect(page).toContain(
         `svg.setAttribute("viewBox", "0 0 ${dimensions.width} ${dimensions.height}");`,
       );
-      expect(page).toContain(`svg.setAttribute("width", "${dimensions.width}");`);
-      expect(page).toContain(`svg.setAttribute("height", "${dimensions.height}");`);
+      expect(page).toContain(
+        `svg.setAttribute("width", "${dimensions.width}");`,
+      );
+      expect(page).toContain(
+        `svg.setAttribute("height", "${dimensions.height}");`,
+      );
 
       // No dimension pair belonging to one of the *other* two aspects
       // should survive anywhere in the page -- this is exactly the shape
       // of the shipped defect (a 1080x1920 page regardless of scene).
       for (const [otherAspect, other] of aspects) {
         if (otherAspect === aspect) continue;
-        if (other.width === dimensions.width && other.height === dimensions.height)
+        if (
+          other.width === dimensions.width &&
+          other.height === dimensions.height
+        )
           continue;
-        expect(page).not.toContain(`width: ${other.width}px; height: ${other.height}px`);
+        expect(page).not.toContain(
+          `width: ${other.width}px; height: ${other.height}px`,
+        );
         expect(page).not.toContain(
           `width="${other.width}" height="${other.height}"`,
         );
-        expect(page).not.toContain(`gl.viewport(0, 0, ${other.width}, ${other.height})`);
+        expect(page).not.toContain(
+          `gl.viewport(0, 0, ${other.width}, ${other.height})`,
+        );
         expect(page).not.toContain(`0 0 ${other.width} ${other.height}`);
       }
     });

@@ -24,7 +24,9 @@ const signal = new AbortController().signal;
 
 describe("createSelfHostedVideoMaterialProvider", () => {
   it("refuses by name when RVS_WAN_ALPHA_BASE_URL is not configured", async () => {
-    const provider = createSelfHostedVideoMaterialProvider({ baseUrl: undefined });
+    const provider = createSelfHostedVideoMaterialProvider({
+      baseUrl: undefined,
+    });
     await expect(produceMaterial(provider, request, signal)).rejects.toThrow(
       /MATERIAL_PROVIDER_NOT_CONFIGURED/u,
     );
@@ -76,7 +78,9 @@ describe("createSelfHostedVideoMaterialProvider", () => {
     expect(material.provenance.tool).toBe(WAN_ALPHA_TOOL);
     expect(material.contentType).toBe("video/mp4");
     expect(material.provenance.sha256).toBe(
-      createHash("sha256").update(Uint8Array.from([1, 2, 3, 4])).digest("hex"),
+      createHash("sha256")
+        .update(Uint8Array.from([1, 2, 3, 4]))
+        .digest("hex"),
     );
   });
 

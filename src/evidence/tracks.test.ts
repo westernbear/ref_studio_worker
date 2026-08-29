@@ -4,7 +4,11 @@ import { projectEvidenceTracks } from "./tracks.js";
 const bundle = (): Record<string, unknown> => ({
   sceneInput: {
     owners: [
-      { ownerId: "foreground-subject", kind: "foreground-subject", confidence: 0.9 },
+      {
+        ownerId: "foreground-subject",
+        kind: "foreground-subject",
+        confidence: 0.9,
+      },
     ],
     geometry: {
       "foreground-subject": {

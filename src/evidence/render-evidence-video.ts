@@ -134,7 +134,8 @@ export const buildEvidenceOverlayFilter = (
 // drawtext gives back no measurement, so a label's footprint is estimated from
 // its own length at its own size; the estimate only has to be good enough to
 // tell "these two share a row" from "these two do not".
-const labelWidth = (text: string, size: number): number => text.length * size * 0.6;
+const labelWidth = (text: string, size: number): number =>
+  text.length * size * 0.6;
 const labelHeight = (size: number): number => Math.round(size * 1.2) + 4;
 
 const placedLabels = (
@@ -156,7 +157,12 @@ const placedLabels = (
   }
   const clauses: string[] = [];
   for (const frame of [...byFrame.keys()].sort((a, b) => a - b)) {
-    const placed: Array<{ x: number; top: number; width: number; height: number }> = [];
+    const placed: Array<{
+      x: number;
+      top: number;
+      width: number;
+      height: number;
+    }> = [];
     const queue = [...(byFrame.get(frame) ?? [])].sort(
       (left, right) => left.top - right.top || left.x - right.x,
     );

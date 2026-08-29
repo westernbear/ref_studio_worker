@@ -21,9 +21,7 @@ const LABEL_ORDER = [
 // That is what the reviewer gate asks for, and it keeps this to one cheap
 // ffmpeg pass over the finished animatic instead of a second full Chromium
 // capture. Anchoring a caption per owner means going back to the renderer.
-export const buildVfxLabelFilter = (
-  shaders: readonly string[],
-): string => {
+export const buildVfxLabelFilter = (shaders: readonly string[]): string => {
   const present = LABEL_ORDER.filter((shader) => shaders.includes(shader));
   const clauses = present.map((shader, row) => {
     const text = escapeDrawtext(LABEL_BY_SHADER[shader] ?? shader);

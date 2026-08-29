@@ -191,7 +191,9 @@ describe("semantic DOM/SVG renderer", () => {
   });
 
   it("omits fill when the compiler measured no palette", () => {
-    expect(createRenderApp(input()).renderFrame(0).markup).not.toContain("fill=");
+    expect(createRenderApp(input()).renderFrame(0).markup).not.toContain(
+      "fill=",
+    );
   });
 
   it("strokes a surface with its own lit edge, not the stylesheet's white", () => {

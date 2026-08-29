@@ -75,7 +75,7 @@ const EASE: Record<Ease, (t: number) => number> = {
   linear: (t) => t,
   easeIn: (t) => t * t,
   easeOut: (t) => t * (2 - t),
-  easeInOut: (t) => (t < 0.5 ? 2 * t * t : 1 - ((-2 * t + 2) ** 2) / 2),
+  easeInOut: (t) => (t < 0.5 ? 2 * t * t : 1 - (-2 * t + 2) ** 2 / 2),
 };
 
 const valueAt = (

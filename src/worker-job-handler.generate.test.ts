@@ -367,19 +367,21 @@ describe("the assets worker phase", () => {
   it("builds the real provider through the factory, once per job, with that job's id", async () => {
     const fake = api();
     const bytes = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 9]);
-    const materialProviderFactory = vi.fn((jobId: string): MaterialProvider => ({
-      tool: `remote@${jobId}`,
-      generate: async (request) => ({
-        bytes,
-        contentType: "image/png" as const,
-        provenance: {
-          tool: `remote@${jobId}`,
-          prompt: request.prompt,
-          seed: 11,
-          sha256: sha256(bytes),
-        },
+    const materialProviderFactory = vi.fn(
+      (jobId: string): MaterialProvider => ({
+        tool: `remote@${jobId}`,
+        generate: async (request) => ({
+          bytes,
+          contentType: "image/png" as const,
+          provenance: {
+            tool: `remote@${jobId}`,
+            prompt: request.prompt,
+            seed: 11,
+            sha256: sha256(bytes),
+          },
+        }),
       }),
-    }));
+    );
     const handler = createWorkflowJobHandler({
       api: fake,
       materialProviderFactory,

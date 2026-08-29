@@ -9,7 +9,10 @@
 import { z } from "zod";
 
 export type Aspect = "9:16" | "1:1" | "16:9";
-export const CANVAS: Record<Aspect, { readonly width: number; readonly height: number }> = {
+export const CANVAS: Record<
+  Aspect,
+  { readonly width: number; readonly height: number }
+> = {
   "9:16": { width: 1080, height: 1920 },
   "1:1": { width: 1080, height: 1080 },
   "16:9": { width: 1920, height: 1080 },

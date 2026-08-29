@@ -49,7 +49,11 @@ describe("createRemoteImageMaterialProvider", () => {
     const requestMaterial = vi.fn(async () => ({
       bytes,
       contentType: "image/png" as const,
-      provenance: { tool: "openai:gpt-image-2-2026-01-01", prompt: request.prompt, sha256 },
+      provenance: {
+        tool: "openai:gpt-image-2-2026-01-01",
+        prompt: request.prompt,
+        sha256,
+      },
     }));
     const provider = createRemoteImageMaterialProvider(
       { requestMaterial } as unknown as Pick<WorkerApi, "requestMaterial">,
@@ -70,20 +74,26 @@ describe("createRemoteImageMaterialProvider", () => {
       "job-a",
     );
 
-    await expect(
-      produceMaterial(provider, request, signal),
-    ).rejects.toThrow(/MATERIAL_PROVIDER_NOT_CONFIGURED/u);
+    await expect(produceMaterial(provider, request, signal)).rejects.toThrow(
+      /MATERIAL_PROVIDER_NOT_CONFIGURED/u,
+    );
   });
 
   it("forwards the AbortSignal it was given", async () => {
-    const requestMaterial = vi.fn(async (_jobId: string, _req: MaterialRequest, sig: AbortSignal) => {
-      expect(sig).toBe(signal);
-      return {
-        bytes,
-        contentType: "image/png" as const,
-        provenance: { tool: "openai:gpt-image-2", prompt: request.prompt, sha256 },
-      };
-    });
+    const requestMaterial = vi.fn(
+      async (_jobId: string, _req: MaterialRequest, sig: AbortSignal) => {
+        expect(sig).toBe(signal);
+        return {
+          bytes,
+          contentType: "image/png" as const,
+          provenance: {
+            tool: "openai:gpt-image-2",
+            prompt: request.prompt,
+            sha256,
+          },
+        };
+      },
+    );
     const provider = createRemoteImageMaterialProvider(
       { requestMaterial } as unknown as Pick<WorkerApi, "requestMaterial">,
       "job-a",

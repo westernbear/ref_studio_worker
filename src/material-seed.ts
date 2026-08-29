@@ -7,7 +7,4 @@ import { createHash } from "node:crypto";
 // id and prompt alone, so retrying the very same request derives the very
 // same seed, and two different assets sharing a prompt still diverge.
 export const deriveMaterialSeed = (assetId: string, prompt: string): number =>
-  createHash("sha256")
-    .update(`${assetId} ${prompt}`)
-    .digest()
-    .readUInt32BE(0);
+  createHash("sha256").update(`${assetId} ${prompt}`).digest().readUInt32BE(0);

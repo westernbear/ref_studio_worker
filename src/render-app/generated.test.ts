@@ -149,7 +149,10 @@ describe("createGeneratedRenderApp", () => {
     const markup = app.renderFrame(0).markup;
     const shapeIndex = markup.indexOf('data-element-id="bare-shape"');
     expect(shapeIndex).toBeGreaterThan(-1);
-    const tag = markup.slice(markup.lastIndexOf("<", shapeIndex), markup.indexOf("/>", shapeIndex) + 2);
+    const tag = markup.slice(
+      markup.lastIndexOf("<", shapeIndex),
+      markup.indexOf("/>", shapeIndex) + 2,
+    );
     expect(tag).toContain(`fill="${fixtureSpec.palette.cool}"`);
   });
 
@@ -179,9 +182,9 @@ describe("createGeneratedRenderApp", () => {
       'data-element-id="headline__effect-drop-shadow"',
     );
     expect(shadowIndex).toBeGreaterThan(-1);
-    expect(markup.indexOf('data-element-id="headline__effect-drop-shadow"')).toBeLessThan(
-      markup.indexOf('data-element-id="headline"'),
-    );
+    expect(
+      markup.indexOf('data-element-id="headline__effect-drop-shadow"'),
+    ).toBeLessThan(markup.indexOf('data-element-id="headline"'));
     // The shadow's colour comes from the palette's background, not a
     // hardcoded black.
     expect(markup.slice(shadowIndex, shadowIndex + 200)).toContain(

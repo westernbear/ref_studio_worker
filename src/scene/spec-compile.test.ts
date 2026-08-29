@@ -7,7 +7,9 @@ const clone = (spec: SceneSpec): SceneSpec =>
 
 const withKeyframe = (
   spec: SceneSpec,
-  patch: Partial<SceneSpec["beats"][number]["elements"][number]["keyframes"][number]>,
+  patch: Partial<
+    SceneSpec["beats"][number]["elements"][number]["keyframes"][number]
+  >,
 ): SceneSpec => {
   const next = clone(spec);
   const keyframe = next.beats[0]!.elements[0]!.keyframes[1]!;

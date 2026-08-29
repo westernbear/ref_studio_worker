@@ -2,7 +2,10 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { buildEvidenceOverlayFilter, renderEvidenceVideo } from "./render-evidence-video.js";
+import {
+  buildEvidenceOverlayFilter,
+  renderEvidenceVideo,
+} from "./render-evidence-video.js";
 import type { EvidenceTrack } from "./tracks.js";
 import type { CommandRunner } from "../process-runner.js";
 
@@ -36,7 +39,9 @@ describe("buildEvidenceOverlayFilter", () => {
       },
     ];
     const filter = buildEvidenceOverlayFilter(tracks, { fps: 30 });
-    expect(filter).toContain("drawbox=x=57:y=117:w=6:h=6:color=cyan@0.9:thickness=fill");
+    expect(filter).toContain(
+      "drawbox=x=57:y=117:w=6:h=6:color=cyan@0.9:thickness=fill",
+    );
   });
 
   it("emits a full-width bottom strip per audio-anchor frame", () => {
@@ -131,7 +136,9 @@ describe("renderEvidenceVideo", () => {
     const filterPath = join(workspace, "evidence-overlay-filter.txt");
     expect(calls[0]?.args).toContain(filterPath);
     const filterContents = await readFile(filterPath, "utf8");
-    expect(filterContents).toContain("drawbox=x=10:y=20:w=100:h=200:color=yellow@0.8");
+    expect(filterContents).toContain(
+      "drawbox=x=10:y=20:w=100:h=200:color=yellow@0.8",
+    );
     expect(calls[0]?.args).toContain(join(workspace, "evidence.mp4"));
     expect(calls[0]?.args).toContain("aac");
   });
@@ -163,15 +170,17 @@ describe("label placement", () => {
   // Two labels overlap when their estimated footprints intersect. The estimate
   // mirrors the builder's: length x size x 0.6 wide, size x 1.2 + 4 tall.
   const drawn = (filter: string) =>
-    [...filter.matchAll(/drawtext=text='([^']*)':x=(\d+):y=(-?\d+):fontsize=(\d+)/g)].map(
-      (match) => ({
-        text: match[1] ?? "",
-        x: Number(match[2]),
-        top: Number(match[3]),
-        width: (match[1] ?? "").length * Number(match[4]) * 0.6,
-        height: Math.round(Number(match[4]) * 1.2) + 4,
-      }),
-    );
+    [
+      ...filter.matchAll(
+        /drawtext=text='([^']*)':x=(\d+):y=(-?\d+):fontsize=(\d+)/g,
+      ),
+    ].map((match) => ({
+      text: match[1] ?? "",
+      x: Number(match[2]),
+      top: Number(match[3]),
+      width: (match[1] ?? "").length * Number(match[4]) * 0.6,
+      height: Math.round(Number(match[4]) * 1.2) + 4,
+    }));
   const overlaps = (filter: string): string[] => {
     const items = drawn(filter);
     const clashes: string[] = [];
@@ -229,7 +238,8 @@ describe("label placement", () => {
       },
     ]);
     expect(overlaps(filter)).toEqual([]);
-    for (const item of drawn(filter)) expect(item.top).toBeGreaterThanOrEqual(0);
+    for (const item of drawn(filter))
+      expect(item.top).toBeGreaterThanOrEqual(0);
   });
 
   it("lets labels far apart across the frame share a row", () => {
