@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CANVAS, DELIVERY_FPS, type SceneSpec } from "./contracts/index.js";
@@ -135,9 +135,18 @@ describe("renderGeneratedDelivery", () => {
     const workspace = await mkdtemp(join(tmpdir(), "rvs-gen-delivery-"));
     try {
       const outPath = join(workspace, "out.mp4");
+      const scenePackagePath = join(workspace, "scene-package");
+      const fontPath = join(workspace, "font.ttf");
+      await writeFile(fontPath, "font");
       const fakeFfmpeg: CommandRunner = async (command, args) => {
         if (command.endsWith("ffprobe"))
           return { stdout: JSON.stringify(probe), stderr: "" };
+        if (command.endsWith("tar")) {
+          const archivePath = args[args.indexOf("-cf") + 1];
+          if (!archivePath) throw new Error("TEST_ARCHIVE_PATH_MISSING");
+          await writeFile(archivePath, "archive");
+          return { stdout: "", stderr: "" };
+        }
         const output = args.at(-1);
         if (!output) throw new Error("TEST_OUTPUT_PATH_MISSING");
         await writeFile(output, "media");
@@ -148,15 +157,27 @@ describe("renderGeneratedDelivery", () => {
           spec: shortFixtureSpec,
           assetPaths: new Map(),
           outPath,
+          scenePackagePath,
           signal: new AbortController().signal,
         },
-        { captureFrames: fakeCapture, runCommand: fakeFfmpeg },
+        { captureFrames: fakeCapture, runCommand: fakeFfmpeg, fontPath },
       );
 
       expect(report.frameSha256).toHaveLength(30);
       expect(report.specDigest).toBe(compileSceneSpec(shortFixtureSpec).digest);
       expect(report.schema).toBe("rvs.gen-render-report.v1");
       expect(report.qc["status"]).toBe("PASS");
+      expect(
+        JSON.parse(
+          await readFile(join(scenePackagePath, "capability.json"), "utf8"),
+        ),
+      ).toMatchObject({
+        rotation: true,
+        anchor: true,
+        "per-axis-scale": true,
+        "parent-transform": true,
+        easing: true,
+      });
     } finally {
       await rm(workspace, { recursive: true, force: true });
     }
