@@ -7,12 +7,12 @@
 // ---- vendored copy below, unmodified ----
 
 import { CANVAS, DELIVERY_FPS } from "./generation.js";
-import type { SceneSpec } from "./scene-spec.js";
+import type { SceneSpecV1 } from "./scene-spec.js";
 
 // 3 beats, 600 frames, 9:16, two text elements and one image element -- the
 // hand-written target the deterministic compiler (Task 2.3) and renderer
 // (Task 2.4) are proven against before any AI authors a scene.
-export const fixtureSpec: SceneSpec = {
+export const fixtureSpec: SceneSpecV1 = {
   schema: "scene-spec-v1",
   mode: "SWAP",
   canvas: {

@@ -95,8 +95,14 @@ export const SPEC_TEXT_WEIGHT_AXIS: Readonly<Record<SpecTextWeight, number>> = {
 export const SPEC_ASSET_FORMS = ["flat", "object"] as const;
 export type SpecAssetForm = (typeof SPEC_ASSET_FORMS)[number];
 
-export type Ease = "linear" | "easeIn" | "easeOut" | "easeInOut";
-export type Keyframe = {
+export const SPEC_EASINGS = [
+  "linear",
+  "easeIn",
+  "easeOut",
+  "easeInOut",
+] as const;
+export type Ease = (typeof SPEC_EASINGS)[number];
+export type KeyframeV1 = {
   readonly frame: number;
   readonly opacity?: number | undefined;
   readonly scale?: number | undefined;
@@ -104,7 +110,19 @@ export type Keyframe = {
   readonly y?: number | undefined;
   readonly ease: Ease;
 };
-export type SpecElement = {
+export type KeyframeV2 = {
+  readonly frame: number;
+  readonly opacity?: number | undefined;
+  readonly scaleX?: number | undefined;
+  readonly scaleY?: number | undefined;
+  readonly rotation?: number | undefined;
+  readonly x?: number | undefined;
+  readonly y?: number | undefined;
+  readonly ease: Ease;
+};
+export type Keyframe = KeyframeV1 | KeyframeV2;
+
+type SpecElementBase = {
   readonly elementId: string;
   readonly kind: "text" | "image" | "shape" | "video";
   readonly assetRef?: string | undefined;
@@ -119,10 +137,19 @@ export type SpecElement = {
     readonly width: number;
     readonly height: number;
   };
-  readonly keyframes: readonly Keyframe[];
   readonly effects: readonly string[];
 };
-export type Beat = {
+export type SpecElementV1 = SpecElementBase & {
+  readonly keyframes: readonly KeyframeV1[];
+};
+export type SpecElementV2 = SpecElementBase & {
+  readonly anchor: { readonly x: number; readonly y: number };
+  readonly parentElementId?: string | undefined;
+  readonly keyframes: readonly KeyframeV2[];
+};
+export type SpecElement = SpecElementV1 | SpecElementV2;
+
+type BeatBase = {
   readonly beatId: string;
   readonly startFrame: number;
   readonly endFrame: number;
@@ -132,8 +159,10 @@ export type Beat = {
     | "ring-expand"
     | "tile-grid"
     | "type-flash";
-  readonly elements: readonly SpecElement[];
 };
+export type BeatV1 = BeatBase & { readonly elements: readonly SpecElementV1[] };
+export type BeatV2 = BeatBase & { readonly elements: readonly SpecElementV2[] };
+export type Beat = BeatV1 | BeatV2;
 export type SpecAsset = {
   readonly assetId: string;
   readonly kind: "image" | "video" | "font" | "color";
@@ -161,8 +190,7 @@ export type SpecAsset = {
       }
     | undefined;
 };
-export type SceneSpec = {
-  readonly schema: "scene-spec-v1";
+type SceneSpecBase = {
   readonly mode: "SWAP" | "REINTERPRET";
   readonly canvas: {
     readonly width: number;
@@ -177,66 +205,102 @@ export type SceneSpec = {
     readonly background: string;
   };
   readonly assets: readonly SpecAsset[];
-  readonly beats: readonly Beat[];
 };
+export type SceneSpecV1 = SceneSpecBase & {
+  readonly schema: "scene-spec-v1";
+  readonly beats: readonly BeatV1[];
+};
+export type SceneSpecV2 = SceneSpecBase & {
+  readonly schema: "scene-spec-v2";
+  readonly beats: readonly BeatV2[];
+};
+export type SceneSpec = SceneSpecV1 | SceneSpecV2;
 
 const HEX_COLOR = /^#[0-9a-f]{6}$/iu;
 
-const KeyframeSchema = z
+const FiniteNumberSchema = z.number().finite();
+
+const KeyframeV1Schema = z
   .object({
     frame: z.number().int().nonnegative(),
     opacity: z.number().min(0).max(1).optional(),
     scale: z.number().positive().optional(),
-    x: z.number().optional(),
-    y: z.number().optional(),
-    ease: z.enum(["linear", "easeIn", "easeOut", "easeInOut"]),
+    x: FiniteNumberSchema.optional(),
+    y: FiniteNumberSchema.optional(),
+    ease: z.enum(SPEC_EASINGS),
+  })
+  .strict();
+
+const KeyframeV2Schema = z
+  .object({
+    frame: z.number().int().nonnegative(),
+    opacity: FiniteNumberSchema.min(0).max(1).optional(),
+    scaleX: FiniteNumberSchema.optional(),
+    scaleY: FiniteNumberSchema.optional(),
+    rotation: FiniteNumberSchema.optional(),
+    x: FiniteNumberSchema.optional(),
+    y: FiniteNumberSchema.optional(),
+    ease: z.enum(SPEC_EASINGS),
   })
   .strict();
 
 const BoxSchema = z
   .object({
-    x: z.number(),
-    y: z.number(),
-    width: z.number().positive(),
-    height: z.number().positive(),
+    x: FiniteNumberSchema,
+    y: FiniteNumberSchema,
+    width: FiniteNumberSchema.positive(),
+    height: FiniteNumberSchema.positive(),
   })
   .strict();
 
-const SpecElementSchema = z
+const SpecElementBaseShape = {
+  elementId: z.string().min(1),
+  kind: z.enum(["text", "image", "shape", "video"]),
+  assetRef: z.string().min(1).optional(),
+  content: z.string().optional(),
+  weight: z.enum(SPEC_TEXT_WEIGHTS).optional(),
+  box: BoxSchema,
+  effects: z.array(z.enum(SPEC_EFFECTS)),
+} as const;
+
+const SpecElementV1Schema = z
   .object({
-    elementId: z.string().min(1),
-    kind: z.enum(["text", "image", "shape", "video"]),
-    assetRef: z.string().min(1).optional(),
-    content: z.string().optional(),
-    // Same reasoning as `effects` below: a z.enum, not a number, because
-    // this schema constrains generation rather than validating it after
-    // the fact. See SPEC_TEXT_WEIGHTS.
-    weight: z.enum(SPEC_TEXT_WEIGHTS).optional(),
-    box: BoxSchema,
-    keyframes: z.array(KeyframeSchema),
-    // Enforced right here via z.enum(SPEC_EFFECTS), not downstream as a
-    // policy check: in Phase 3 this schema doubles as the AI's
-    // structured-output schema, and a Zod enum becomes a JSON Schema enum
-    // -- the model literally cannot emit an effect outside the allowlist.
-    // Constraining generation beats validating it after the fact.
-    effects: z.array(z.enum(SPEC_EFFECTS)),
+    ...SpecElementBaseShape,
+    keyframes: z.array(KeyframeV1Schema),
   })
   .strict();
 
-const BeatSchema = z
+const SpecElementV2Schema = z
   .object({
-    beatId: z.string().min(1),
-    startFrame: z.number().int().nonnegative(),
-    endFrame: z.number().int().nonnegative(),
-    shot: z.enum([
-      "push-in",
-      "hard-cut",
-      "ring-expand",
-      "tile-grid",
-      "type-flash",
-    ]),
-    elements: z.array(SpecElementSchema),
+    ...SpecElementBaseShape,
+    anchor: z.object({ x: FiniteNumberSchema, y: FiniteNumberSchema }).strict(),
+    parentElementId: z.string().min(1).optional(),
+    keyframes: z.array(KeyframeV2Schema),
   })
+  .strict();
+
+const beatShape = {
+  beatId: z.string().min(1),
+  startFrame: z.number().int().nonnegative(),
+  endFrame: z.number().int().nonnegative(),
+  shot: z.enum([
+    "push-in",
+    "hard-cut",
+    "ring-expand",
+    "tile-grid",
+    "type-flash",
+  ]),
+} as const;
+
+const BeatV1Schema = z
+  .object({
+    ...beatShape,
+    elements: z.array(SpecElementV1Schema),
+  })
+  .strict();
+
+const BeatV2Schema = z
+  .object({ ...beatShape, elements: z.array(SpecElementV2Schema) })
   .strict();
 
 const SpecAssetSchema = z
@@ -258,27 +322,44 @@ const SpecAssetSchema = z
   })
   .strict();
 
-export const SceneSpecSchema: z.ZodType<SceneSpec> = z
+const SceneSpecBaseShape = {
+  mode: z.enum(["SWAP", "REINTERPRET"]),
+  canvas: z
+    .object({
+      width: z.number().int().positive(),
+      height: z.number().int().positive(),
+      fps: z.number().int().positive(),
+      frameCount: z.number().int().positive(),
+    })
+    .strict(),
+  palette: z
+    .object({
+      hero: z.string().regex(HEX_COLOR),
+      cool: z.string().regex(HEX_COLOR),
+      warm: z.string().regex(HEX_COLOR),
+      background: z.string().regex(HEX_COLOR),
+    })
+    .strict(),
+  assets: z.array(SpecAssetSchema),
+} as const;
+
+const SceneSpecV1Schema = z
   .object({
+    ...SceneSpecBaseShape,
     schema: z.literal("scene-spec-v1"),
-    mode: z.enum(["SWAP", "REINTERPRET"]),
-    canvas: z
-      .object({
-        width: z.number().int().positive(),
-        height: z.number().int().positive(),
-        fps: z.number().int().positive(),
-        frameCount: z.number().int().positive(),
-      })
-      .strict(),
-    palette: z
-      .object({
-        hero: z.string().regex(HEX_COLOR),
-        cool: z.string().regex(HEX_COLOR),
-        warm: z.string().regex(HEX_COLOR),
-        background: z.string().regex(HEX_COLOR),
-      })
-      .strict(),
-    assets: z.array(SpecAssetSchema),
-    beats: z.array(BeatSchema),
+    beats: z.array(BeatV1Schema),
   })
   .strict();
+
+const SceneSpecV2Schema = z
+  .object({
+    ...SceneSpecBaseShape,
+    schema: z.literal("scene-spec-v2"),
+    beats: z.array(BeatV2Schema),
+  })
+  .strict();
+
+export const SceneSpecSchema: z.ZodType<SceneSpec> = z.discriminatedUnion(
+  "schema",
+  [SceneSpecV1Schema, SceneSpecV2Schema],
+);

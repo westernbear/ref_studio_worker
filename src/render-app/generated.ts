@@ -103,6 +103,11 @@ type Box = {
   readonly height: number;
 };
 
+const transformAttribute = (
+  transform: FramePlan["draws"][number]["transform"],
+): string =>
+  transform === undefined ? "" : ` transform="matrix(${transform.join(" ")})"`;
+
 // A drop shadow is one offset, darkened copy drawn beneath the element. The
 // offset is fixed canvas pixels, not proportional to the element's box, so
 // the implied light angle reads the same regardless of how big the
@@ -139,9 +144,10 @@ const effectLayerMarkup = (
   color: string,
   content: string | undefined,
   weight: SpecTextWeight | undefined,
+  transform: FramePlan["draws"][number]["transform"],
 ): string => {
   const id = `${escapeXml(elementId)}__${suffix}`;
-  const attributes = `data-element-id="${id}" x="${box.x}" y="${box.y}" width="${box.width}" height="${box.height}" opacity="${opacity}"`;
+  const attributes = `data-element-id="${id}" x="${box.x}" y="${box.y}" width="${box.width}" height="${box.height}" opacity="${opacity}"${transformAttribute(transform)}`;
   // The shadow copy takes the element's own weight: a copy drawn at the
   // page default under text set in another weight would sit at different
   // glyph widths and read as a second, misaligned line rather than a
@@ -172,6 +178,7 @@ const effectLayersMarkup = (
     shadowColor,
     draw.content,
     draw.weight,
+    draw.transform,
   );
 };
 
@@ -187,7 +194,7 @@ const drawMarkup = (
       : "";
   const attributes =
     `data-element-id="${escapeXml(draw.elementId)}"${assetAttribute} ` +
-    `x="${draw.box.x}" y="${draw.box.y}" width="${draw.box.width}" height="${draw.box.height}" opacity="${draw.opacity}"`;
+    `x="${draw.box.x}" y="${draw.box.y}" width="${draw.box.width}" height="${draw.box.height}" opacity="${draw.opacity}"${transformAttribute(draw.transform)}`;
   const asset =
     draw.assetRef !== undefined ? assetsById.get(draw.assetRef) : undefined;
   if (draw.kind === "video")

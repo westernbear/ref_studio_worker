@@ -19,6 +19,31 @@ describe("createGeneratedRenderApp", () => {
     expect(app.renderFrame(0).markup).toContain("<svg");
   });
 
+  it("preserves byte-exact v1 frame markup", () => {
+    const app = createGeneratedRenderApp(compileSceneSpec(fixtureSpec), []);
+    expect(app.renderFrame(0).markup).toBe(
+      '<svg data-frame="0" role="img"><g><rect data-element-id="scene-background" x="0" y="0" width="1080" height="1920" fill="#101018" stroke="none" style="rx:0" /><text data-element-id="headline" x="120" y="400" width="840" height="160" opacity="0" fill="#ff5500" font-size="128">REF STUDIO</text></g></svg>',
+    );
+  });
+
+  it("emits the compiled v2 transform matrix", () => {
+    const compilation = compileSceneSpec(fixtureSpec);
+    const first = compilation.frames[0]!.draws[0]!;
+    const transformed = {
+      ...compilation,
+      frames: [
+        {
+          frame: 0,
+          draws: [{ ...first, transform: [0, 2, -1, 0, 10, 20] as const }],
+        },
+      ],
+    };
+    const markup = createGeneratedRenderApp(transformed, []).renderFrame(
+      0,
+    ).markup;
+    expect(markup).toContain('transform="matrix(0 2 -1 0 10 20)"');
+  });
+
   it("escapes text content", () => {
     const spec = withElement(fixtureSpec, {
       kind: "text",
