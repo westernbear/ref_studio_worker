@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -72,6 +72,8 @@ describe("decodeVideoAsset", () => {
     ["wrong hash", { expectedSha256: "0".repeat(64) }],
     ["wrong content type", { contentType: "video/webm" }],
     ["unsafe id", { assetId: "../clip" }],
+    ["dot alias", { assetId: "." }],
+    ["dot-dot alias", { assetId: ".." }],
   ])("rejects %s without a fallback", async (_name, override) => {
     const workspace = await mkdtemp(join(tmpdir(), "rvs-video-reject-"));
     try {
@@ -91,6 +93,26 @@ describe("decodeVideoAsset", () => {
     } finally {
       await rm(workspace, { recursive: true, force: true });
     }
+  });
+
+  it("never removes a workspace sentinel for an invalid cleanup alias", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "rvs-video-sentinel-"));
+    const sentinel = join(workspace, "sentinel.txt");
+    await writeFile(sentinel, "keep");
+    const bytes = Uint8Array.from([1, 2, 3]);
+    await expect(
+      decodeVideoAsset({
+        assetId: "..",
+        bytes,
+        expectedSha256: sha256(bytes),
+        contentType: "video/mp4",
+        canvas,
+        workspace,
+        signal,
+      }),
+    ).rejects.toThrow("VIDEO_DECODE_UNSUPPORTED");
+    expect(await readFile(sentinel, "utf8")).toBe("keep");
+    await rm(workspace, { recursive: true, force: true });
   });
 
   it("maps corrupt probe output and cancellation to stable tokens", async () => {

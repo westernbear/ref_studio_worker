@@ -1,4 +1,5 @@
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CANVAS, DELIVERY_FPS, type SceneSpec } from "./contracts/index.js";
@@ -100,6 +101,72 @@ const fakeCapture = async (
 };
 
 describe("renderGeneratedDelivery", () => {
+  it("rejects a missing or mismatched supplied video content type before ffprobe", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "rvs-video-content-type-"));
+    try {
+      const path = join(workspace, "clip.mp4");
+      const bytes = Uint8Array.from([1, 2, 3]);
+      await writeFile(path, bytes);
+      const spec: SceneSpec = {
+        ...shortFixtureSpec,
+        assets: [
+          {
+            assetId: "clip",
+            kind: "video",
+            origin: "attachment",
+            ref: "attachment-clip",
+          },
+        ],
+        beats: [
+          {
+            ...shortFixtureSpec.beats[0]!,
+            elements: [
+              {
+                elementId: "clip-element",
+                kind: "video",
+                assetRef: "clip",
+                box: { x: 0, y: 0, width: 100, height: 100 },
+                keyframes: [
+                  { frame: 0, opacity: 1, ease: "linear" },
+                  { frame: 29, opacity: 1, ease: "linear" },
+                ],
+                effects: [],
+              },
+            ],
+          },
+        ],
+      };
+      let commands = 0;
+      const digest = createHash("sha256").update(bytes).digest("hex");
+      for (const assetContentTypes of [
+        new Map<string, string>(),
+        new Map([["clip", "video/webm"]]),
+      ])
+        await expect(
+          renderGeneratedDelivery(
+            {
+              spec,
+              assetPaths: new Map([["clip", path]]),
+              assetDigests: new Map([["clip", digest]]),
+              assetContentTypes,
+              outPath: join(workspace, "out.mp4"),
+              signal: new AbortController().signal,
+            },
+            {
+              runCommand: async () => {
+                commands += 1;
+                throw new Error("COMMAND_MUST_NOT_RUN");
+              },
+              captureFrames: fakeCapture,
+            },
+          ),
+        ).rejects.toThrow("VIDEO_DECODE_UNSUPPORTED");
+      expect(commands).toBe(0);
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
   it("forwards cancellation to Chrome and ffmpeg", async () => {
     // Given
     const workspace = await mkdtemp(join(tmpdir(), "rvs-gen-delivery-"));

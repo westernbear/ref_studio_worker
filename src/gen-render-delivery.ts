@@ -65,6 +65,7 @@ export async function renderGeneratedDelivery(
     readonly spec: SceneSpec;
     readonly assetPaths: ReadonlyMap<string, string>;
     readonly assetDigests?: ReadonlyMap<string, string>;
+    readonly assetContentTypes?: ReadonlyMap<string, string>;
     readonly outPath: string;
     readonly signal: AbortSignal;
     readonly scenePackagePath?: string;
@@ -118,14 +119,19 @@ export async function renderGeneratedDelivery(
     const path = input.assetPaths.get(asset.assetId);
     const expectedSha256 =
       input.assetDigests?.get(asset.assetId) ?? asset.provenance?.sha256;
-    if (path === undefined || expectedSha256 === undefined)
+    const contentType = input.assetContentTypes?.get(asset.assetId);
+    if (
+      path === undefined ||
+      expectedSha256 === undefined ||
+      contentType === undefined
+    )
       throw new Error("VIDEO_DECODE_UNSUPPORTED");
     const decoded = await decodeVideoAsset(
       {
         assetId: asset.assetId,
         bytes: await readFile(path),
         expectedSha256,
-        contentType: "video/mp4",
+        contentType,
         canvas,
         workspace: dirname(input.outPath),
         signal: input.signal,

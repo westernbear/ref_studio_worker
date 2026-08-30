@@ -408,6 +408,7 @@ export const createWorkflowJobHandler = (
         await mkdir(assetDirectory, { recursive: true });
         const assetPaths = new Map<string, string>();
         const assetDigests = new Map<string, string>();
+        const assetContentTypes = new Map<string, string>();
         for (const asset of payload.assets) {
           if (!SAFE_ASSET_ID.test(asset.assetId))
             throw new Error("WORKER_ASSET_ID_UNSAFE");
@@ -427,6 +428,7 @@ export const createWorkflowJobHandler = (
             throw new Error("WORKER_ASSET_DIGEST_MISMATCH");
           assetPaths.set(asset.assetId, destination);
           assetDigests.set(asset.assetId, asset.sha256);
+          assetContentTypes.set(asset.assetId, asset.contentType);
         }
         await progress("scene-render", 0.2, 0, frameCount);
         const generatedDeadline = AbortSignal.timeout(
@@ -450,6 +452,7 @@ export const createWorkflowJobHandler = (
               spec,
               assetPaths,
               assetDigests,
+              assetContentTypes,
               outPath: outputPath,
               signal: generatedSignal,
               scenePackagePath: join(workspace, "scene-package"),

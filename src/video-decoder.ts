@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { isAbsolute, relative, resolve, sep } from "node:path";
 import { z } from "zod";
 import { runCommand, type CommandRunner } from "./process-runner.js";
 
@@ -58,6 +58,35 @@ export type DecodedVideo = Readonly<{
   report: VideoDecodeReport;
 }>;
 
+const isOwnedPath = (owner: string, candidate: string): boolean => {
+  const path = relative(owner, candidate);
+  return (
+    path !== "" &&
+    path !== ".." &&
+    !path.startsWith(`..${sep}`) &&
+    !isAbsolute(path)
+  );
+};
+
+const ownedDecodeDirectory = (workspace: string, assetId: string): string => {
+  if (
+    !/^[A-Za-z0-9._-]+$/u.test(assetId) ||
+    assetId === "." ||
+    assetId === ".."
+  )
+    throw new VideoDecodeError();
+  const owner = resolve(workspace, "decoded-video");
+  const directory = resolve(owner, assetId);
+  if (!isOwnedPath(owner, directory)) throw new VideoDecodeError();
+  return directory;
+};
+
+const ownedOutputPath = (directory: string, name: string): string => {
+  const path = resolve(directory, name);
+  if (!isOwnedPath(directory, path)) throw new VideoDecodeError();
+  return path;
+};
+
 const fraction = (value: string | undefined): number => {
   const [numerator, denominator] = (value ?? "").split("/").map(Number);
   return numerator && denominator ? numerator / denominator : Number.NaN;
@@ -83,10 +112,10 @@ export async function decodeVideoAsset(
   }>,
   run: CommandRunner = runCommand,
 ): Promise<DecodedVideo> {
-  const directory = join(input.workspace, "decoded-video", input.assetId);
+  let directory: string | undefined;
   try {
+    directory = ownedDecodeDirectory(input.workspace, input.assetId);
     if (
-      !/^[A-Za-z0-9._-]+$/u.test(input.assetId) ||
       input.contentType !== "video/mp4" ||
       input.bytes.byteLength === 0 ||
       sha256(input.bytes) !== input.expectedSha256
@@ -94,7 +123,7 @@ export async function decodeVideoAsset(
       throw new VideoDecodeError();
     await rm(directory, { recursive: true, force: true });
     await mkdir(directory, { recursive: true });
-    const inputPath = join(directory, "input.mp4");
+    const inputPath = ownedOutputPath(directory, "input.mp4");
     await writeFile(inputPath, input.bytes, { mode: 0o600 });
     const ffmpeg = process.env.RVS_FFMPEG_PATH ?? "ffmpeg";
     const ffprobe = process.env.RVS_FFPROBE_PATH ?? "ffprobe";
@@ -182,7 +211,7 @@ export async function decodeVideoAsset(
         "rgb24",
         "-threads",
         "1",
-        join(directory, "frame-%06d.png"),
+        ownedOutputPath(directory, "frame-%06d.png"),
       ],
       { cwd: directory, signal: input.signal },
     );
@@ -190,7 +219,10 @@ export async function decodeVideoAsset(
       .filter((name) => /^frame-\d{6}\.png$/u.test(name))
       .sort();
     if (names.length !== input.canvas.frameCount) throw new VideoDecodeError();
-    const framePaths = names.map((name) => join(directory, name));
+    const decodedDirectory = directory;
+    const framePaths = names.map((name) =>
+      ownedOutputPath(decodedDirectory, name),
+    );
     const frameSha256 = await Promise.all(
       framePaths.map(async (path) => sha256(await readFile(path))),
     );
@@ -206,7 +238,8 @@ export async function decodeVideoAsset(
       },
     };
   } catch (error) {
-    await rm(directory, { recursive: true, force: true });
+    if (directory !== undefined)
+      await rm(directory, { recursive: true, force: true });
     if (
       input.signal.aborted ||
       (error instanceof Error && error.message === "WORKER_JOB_CANCELLED")
