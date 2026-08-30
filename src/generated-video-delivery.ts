@@ -26,6 +26,8 @@ const Probe = z.object({
     }),
   ),
 });
+const ProbeMetadata = Probe.omit({ frames: true });
+const ProbeFrames = Probe.pick({ frames: true });
 
 const fraction = (value: string): number => {
   const [numerator, denominator] = value.split("/").map(Number);
@@ -35,10 +37,14 @@ const fraction = (value: string): number => {
 };
 
 const validate = (
-  raw: string,
+  metadataRaw: string,
+  framesRaw: string,
   canvas: SceneSpec["canvas"],
 ): Record<string, unknown> => {
-  const probe = Probe.parse(JSON.parse(raw));
+  const probe = {
+    ...ProbeMetadata.parse(JSON.parse(metadataRaw)),
+    ...ProbeFrames.parse(JSON.parse(framesRaw)),
+  };
   const video = probe.streams.find((stream) => stream.codec_type === "video");
   const audio = probe.streams.find((stream) => stream.codec_type === "audio");
   const duration = Number(probe.format.duration);
@@ -157,7 +163,7 @@ export async function assembleGeneratedVideo(
     ],
     { cwd: input.workspace, signal: input.signal },
   );
-  const probe = await run(
+  const metadata = await run(
     process.env.RVS_FFPROBE_PATH ?? "ffprobe",
     [
       "-v",
@@ -165,14 +171,29 @@ export async function assembleGeneratedVideo(
       "-count_frames",
       "-show_streams",
       "-show_format",
-      "-show_frames",
       "-show_entries",
-      "format=duration:stream=codec_type,codec_name,profile,level,width,height,pix_fmt,avg_frame_rate,nb_read_frames,channels,sample_rate:frame=media_type,key_frame",
+      "format=duration:stream=codec_type,codec_name,profile,level,width,height,pix_fmt,avg_frame_rate,nb_read_frames,channels,sample_rate",
       "-of",
-      "json",
+      "json=compact=1",
       input.outputPath,
     ],
     { cwd: input.workspace, signal: input.signal },
   );
-  return validate(probe.stdout, input.canvas);
+  const frames = await run(
+    process.env.RVS_FFPROBE_PATH ?? "ffprobe",
+    [
+      "-v",
+      "error",
+      "-select_streams",
+      "v:0",
+      "-show_frames",
+      "-show_entries",
+      "frame=media_type,key_frame",
+      "-of",
+      "json=compact=1",
+      input.outputPath,
+    ],
+    { cwd: input.workspace, signal: input.signal },
+  );
+  return validate(metadata.stdout, frames.stdout, input.canvas);
 }
