@@ -35,6 +35,7 @@ type Dependencies = Readonly<{
   captureFrames?: typeof captureBrowserFrames;
   readIdentityFile?: (path: string) => Promise<Uint8Array>;
   registeredRuntime?: RegisteredRuntimeSnapshot;
+  declaredImageDigest?: string;
 }>;
 
 export async function runWorkerPreflight(
@@ -106,7 +107,9 @@ export async function runWorkerPreflight(
       nodeVersion: process.version.replace(/^v/u, ""),
       nodeSha256: sha256(nodeBytes),
       imageDigest:
-        process.env.RVS_WORKER_IMAGE_DIGEST ?? registered.imageDigest,
+        dependencies.declaredImageDigest ??
+        process.env.RVS_WORKER_IMAGE_DIGEST ??
+        "",
     };
     assertRuntimeIdentity(identity, registered);
     const browser = await capture({
@@ -157,7 +160,7 @@ export async function runWorkerPreflight(
       rendererIdentity: createHash("sha256")
         .update(JSON.stringify(browser))
         .digest("hex"),
-      imageDigest: process.env.RVS_WORKER_IMAGE_DIGEST ?? null,
+      imageDigest: identity.imageDigest,
     };
     return {
       ...facts,

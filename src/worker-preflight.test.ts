@@ -65,6 +65,60 @@ const identityBytes = (
 };
 
 describe("worker runtime preflight", () => {
+  it("fails closed before capture when the worker image digest is missing", async () => {
+    let captured = false;
+    await expect(
+      runWorkerPreflight(new AbortController().signal, {
+        runCommand: async (command) => ({
+          stdout: command.includes("chrome")
+            ? "Google Chrome 151.0.7922.138"
+            : command.includes("ffprobe")
+              ? "ffprobe version 8.0.1"
+              : command.includes("ffmpeg")
+                ? "ffmpeg version 8.0.1"
+                : "ok",
+          stderr: "",
+        }),
+        readIdentityFile: async (path: string) => identityBytes(path),
+        registeredRuntime: registeredFor(),
+        captureFrames: async () => {
+          captured = true;
+          throw new Error("CAPTURE_MUST_NOT_RUN");
+        },
+      }),
+    ).rejects.toThrow("RUNTIME_SNAPSHOT_MISMATCH");
+    expect(captured).toBe(false);
+  });
+
+  it.each(["invalid", `sha256:${"0".repeat(64)}`])(
+    "fails closed before capture when the worker image digest is %s",
+    async (declaredImageDigest) => {
+      let captured = false;
+      await expect(
+        runWorkerPreflight(new AbortController().signal, {
+          runCommand: async (command) => ({
+            stdout: command.includes("chrome")
+              ? "Google Chrome 151.0.7922.138"
+              : command.includes("ffprobe")
+                ? "ffprobe version 8.0.1"
+                : command.includes("ffmpeg")
+                  ? "ffmpeg version 8.0.1"
+                  : "ok",
+            stderr: "",
+          }),
+          readIdentityFile: async (path: string) => identityBytes(path),
+          registeredRuntime: registeredFor(),
+          declaredImageDigest,
+          captureFrames: async () => {
+            captured = true;
+            throw new Error("CAPTURE_MUST_NOT_RUN");
+          },
+        }),
+      ).rejects.toThrow("RUNTIME_SNAPSHOT_MISMATCH");
+      expect(captured).toBe(false);
+    },
+  );
+
   it("fails closed before capture when the registered Wanted Sans bytes differ", async () => {
     let captured = false;
     await expect(
@@ -81,6 +135,7 @@ describe("worker runtime preflight", () => {
         }),
         readIdentityFile: async (path: string) =>
           identityBytes(path, { font: "wrong-font" }),
+        declaredImageDigest: REGISTERED_RUNTIME.imageDigest,
         captureFrames: async () => {
           captured = true;
           throw new Error("CAPTURE_MUST_NOT_RUN");
@@ -114,6 +169,7 @@ describe("worker runtime preflight", () => {
           readIdentityFile: async (path: string) =>
             identityBytes(path, overrides),
           registeredRuntime: registeredFor(),
+          declaredImageDigest: REGISTERED_RUNTIME.imageDigest,
           captureFrames: async () => {
             captured = true;
             throw new Error("CAPTURE_MUST_NOT_RUN");
@@ -139,6 +195,7 @@ describe("worker runtime preflight", () => {
         }),
         readIdentityFile: async (path: string) => identityBytes(path),
         registeredRuntime: registeredFor(),
+        declaredImageDigest: REGISTERED_RUNTIME.imageDigest,
         captureFrames: async () => ({
           chromiumVersion: "151.0.7922.138",
           renderer: "ANGLE Hardware GPU",
@@ -189,6 +246,7 @@ describe("worker runtime preflight", () => {
       }),
       readIdentityFile: async (path: string) => identityBytes(path),
       registeredRuntime: registeredFor(),
+      declaredImageDigest: REGISTERED_RUNTIME.imageDigest,
     });
 
     expect(report).toMatchObject({
@@ -248,6 +306,7 @@ describe("worker runtime preflight", () => {
           readIdentityFile: async (path: string) =>
             identityBytes(path, overrides),
           registeredRuntime: registeredFor(overrides),
+          declaredImageDigest: REGISTERED_RUNTIME.imageDigest,
         })
       ).runtimeDigest;
 
@@ -285,6 +344,7 @@ describe("worker runtime preflight", () => {
         }),
         readIdentityFile: async (path: string) => identityBytes(path),
         registeredRuntime: registeredFor(),
+        declaredImageDigest: REGISTERED_RUNTIME.imageDigest,
         captureFrames: async (input) => {
           if (input.signal.aborted) throw new Error("PREFLIGHT_TIMEOUT");
           throw new Error("BROWSER_CAPTURE_WAS_UNBOUNDED");
@@ -310,6 +370,7 @@ describe("worker runtime preflight", () => {
           throw new Error("must not capture without a verified font");
         },
         registeredRuntime: registeredFor(),
+        declaredImageDigest: REGISTERED_RUNTIME.imageDigest,
       }),
     ).rejects.toThrow("ENOENT");
   });
