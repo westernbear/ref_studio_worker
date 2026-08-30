@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { mkdir } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import {
   CANVAS,
@@ -20,6 +20,7 @@ import { compileSceneSpec } from "./scene/spec-compile.js";
 import { buildNativeScenePackage } from "./native-scene-package.js";
 import { archiveScenePackage } from "./scene-package-archive.js";
 import { assembleGeneratedVideo } from "./generated-video-delivery.js";
+import { decodeVideoAsset, type VideoDecodeReport } from "./video-decoder.js";
 
 export type GeneratedRenderReport = Readonly<{
   schema: "rvs.gen-render-report.v1";
@@ -41,6 +42,7 @@ export type GeneratedRenderReport = Readonly<{
     repeatedFrameByteIdentity: boolean;
   }>;
   qc: Readonly<Record<string, unknown>>;
+  videoDecode: readonly VideoDecodeReport[];
   // A local worker-filesystem path, for the content-safety sample upload --
   // never sent to the API, which keeps its report schema strict.
   safetySampleFramePath: string;
@@ -62,6 +64,7 @@ export async function renderGeneratedDelivery(
   input: Readonly<{
     readonly spec: SceneSpec;
     readonly assetPaths: ReadonlyMap<string, string>;
+    readonly assetDigests?: ReadonlyMap<string, string>;
     readonly outPath: string;
     readonly signal: AbortSignal;
     readonly scenePackagePath?: string;
@@ -107,11 +110,37 @@ export async function renderGeneratedDelivery(
       const path = input.assetPaths.get(asset.assetId);
       return path ? [{ family: asset.assetId, path }] : [];
     });
+  const videoFramePaths = new Map<string, readonly string[]>();
+  const videoDecode: VideoDecodeReport[] = [];
+  for (const asset of input.spec.assets.filter(
+    (candidate) => candidate.kind === "video",
+  )) {
+    const path = input.assetPaths.get(asset.assetId);
+    const expectedSha256 =
+      input.assetDigests?.get(asset.assetId) ?? asset.provenance?.sha256;
+    if (path === undefined || expectedSha256 === undefined)
+      throw new Error("VIDEO_DECODE_UNSUPPORTED");
+    const decoded = await decodeVideoAsset(
+      {
+        assetId: asset.assetId,
+        bytes: await readFile(path),
+        expectedSha256,
+        contentType: "video/mp4",
+        canvas,
+        workspace: dirname(input.outPath),
+        signal: input.signal,
+      },
+      command,
+    );
+    videoFramePaths.set(asset.assetId, decoded.framePaths);
+    videoDecode.push(decoded.report);
+  }
   const app = createGeneratedRenderApp(
     compilation,
     [{ family: "Wanted Sans", path: fontPath }, ...fontAssets],
     input.spec.assets,
     input.assetPaths,
+    videoFramePaths,
   );
   const renderedFrames = compilation.frames.map((plan) =>
     app.renderFrame(plan.frame),
@@ -150,6 +179,7 @@ export async function renderGeneratedDelivery(
     },
     command,
   );
+  const qcWithVideoDecode = { ...qc, videoDecode };
 
   const scenePackage = input.scenePackagePath
     ? await buildNativeScenePackage({
@@ -162,7 +192,7 @@ export async function renderGeneratedDelivery(
           text: true,
           image: true,
           shape: true,
-          video: false,
+          video: true,
           rotation: true,
           anchor: true,
           "per-axis-scale": true,
@@ -173,7 +203,7 @@ export async function renderGeneratedDelivery(
           status: "PASS",
           frameSha256: captureReport.frameSha256,
           repeatedFrameByteIdentity: captureReport.repeatedFrameByteIdentity,
-          qc,
+          qc: qcWithVideoDecode,
         },
       })
     : undefined;
@@ -209,7 +239,8 @@ export async function renderGeneratedDelivery(
       networkPolicy: captureReport.networkPolicy,
       repeatedFrameByteIdentity: captureReport.repeatedFrameByteIdentity,
     },
-    qc,
+    qc: qcWithVideoDecode,
+    videoDecode,
     // The middle frame, same choice the restore delivery makes -- the most
     // representative single frame of the film.
     safetySampleFramePath: join(

@@ -184,9 +184,11 @@ const effectLayersMarkup = (
 
 const drawMarkup = (
   draw: FramePlan["draws"][number],
+  frame: number,
   palette: SpecCompilation["palette"],
   assetsById: ReadonlyMap<string, SpecAsset>,
   assetPaths: ReadonlyMap<string, string>,
+  videoFramePaths: ReadonlyMap<string, readonly string[]>,
 ): string => {
   const assetAttribute =
     draw.assetRef !== undefined
@@ -197,8 +199,14 @@ const drawMarkup = (
     `x="${draw.box.x}" y="${draw.box.y}" width="${draw.box.width}" height="${draw.box.height}" opacity="${draw.opacity}"${transformAttribute(draw.transform)}`;
   const asset =
     draw.assetRef !== undefined ? assetsById.get(draw.assetRef) : undefined;
-  if (draw.kind === "video")
-    throw new GeneratedRenderAppError("VIDEO_RENDER_UNSUPPORTED");
+  if (draw.kind === "video") {
+    if (asset?.kind !== "video")
+      throw new GeneratedRenderAppError("VIDEO_ASSET_UNRESOLVED");
+    const path = videoFramePaths.get(asset.assetId)?.[frame];
+    if (path === undefined)
+      throw new GeneratedRenderAppError("VIDEO_DECODE_UNSUPPORTED");
+    return `<image ${attributes} href="${escapeXml(pathToFileURL(path).href)}" preserveAspectRatio="none" />`;
+  }
   // Item 1, the whole point of the material provider: an element whose
   // assetRef resolves to an image asset draws that image at its box,
   // stretched to fill it exactly (preserveAspectRatio="none" -- the box,
@@ -259,6 +267,7 @@ export function createGeneratedRenderApp(
   localFonts: readonly LocalFont[],
   assets: readonly SpecAsset[] = [],
   assetPaths: ReadonlyMap<string, string> = new Map(),
+  videoFramePaths: ReadonlyMap<string, readonly string[]> = new Map(),
 ): { readonly renderFrame: (frame: number) => RenderedFrame } {
   validateLocalFonts(localFonts);
   validateAssetPaths(assetPaths);
@@ -274,7 +283,14 @@ export function createGeneratedRenderApp(
     const plan = framesByIndex.get(frame);
     const nodes = (plan?.draws ?? [])
       .map((draw) =>
-        drawMarkup(draw, compilation.palette, assetsById, assetPaths),
+        drawMarkup(
+          draw,
+          frame,
+          compilation.palette,
+          assetsById,
+          assetPaths,
+          videoFramePaths,
+        ),
       )
       .join("");
     return {

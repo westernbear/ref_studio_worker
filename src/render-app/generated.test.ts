@@ -150,20 +150,22 @@ describe("createGeneratedRenderApp", () => {
     expect(markup.slice(tagStart, tagStart + 6)).toBe("<image");
   });
 
-  it("refuses a video element instead of drawing a shape fallback", () => {
+  it("renders a video element from its decoded local frame", () => {
     const spec = withElement(fixtureSpec, {
       kind: "video",
       content: undefined,
       assetRef: "hero-shot",
     });
-    expect(() =>
-      createGeneratedRenderApp(
-        compileSceneSpec(spec),
-        [],
-        spec.assets,
-        new Map([["hero-shot", "/tmp/hero-shot.png"]]),
-      ).renderFrame(0),
-    ).toThrow(/VIDEO_RENDER_UNSUPPORTED/);
+    spec.assets[0] = { ...spec.assets[0]!, kind: "video" };
+    const markup = createGeneratedRenderApp(
+      compileSceneSpec(spec),
+      [],
+      spec.assets,
+      new Map([["hero-shot", "/tmp/hero-shot.mp4"]]),
+      new Map([["hero-shot", ["/tmp/frame-000001.png"]]]),
+    ).renderFrame(0).markup;
+    expect(markup).toContain(pathToFileURL("/tmp/frame-000001.png").href);
+    expect(markup).not.toContain('<rect data-element-id="headline"');
   });
 
   it("gives a shape with no colour-asset override a visible, palette-derived fill", () => {
