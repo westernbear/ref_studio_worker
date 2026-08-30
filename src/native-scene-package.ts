@@ -12,6 +12,12 @@ import { pathToFileURL } from "node:url";
 import type { SceneSpec } from "./contracts/index.js";
 import type { RenderedFrame } from "./render-app/index.js";
 import { REGISTERED_RUNTIME_DIGEST } from "./runtime-snapshot.js";
+export {
+  applyNativeInteraction,
+  createNativeInteractionModel,
+  parseNativeInteractionEvent,
+} from "./scene-interactions.js";
+import { createNativeInteractionModel } from "./scene-interactions.js";
 
 type NativeScenePackageInput = Readonly<{
   directory: string;
@@ -151,8 +157,11 @@ const assertSafeMarkup = (
 };
 
 const RUNTIME_SCRIPT = `
-const data=JSON.parse(document.getElementById("scene-data").textContent),scene=document.getElementById("scene"),play=document.getElementById("play-pause"),scrub=document.getElementById("frame-scrub"),number=document.getElementById("frame-number"),reduced=matchMedia("(prefers-reduced-motion: reduce)");let frame=0,playing=false,last=0;
-const draw=()=>{scene.innerHTML=data.frames[frame].markup;scrub.value=String(frame);number.value=String(data.frames[frame].frame)};
+const data=JSON.parse(document.getElementById("scene-data").textContent),scene=document.getElementById("scene"),play=document.getElementById("play-pause"),scrub=document.getElementById("frame-scrub"),number=document.getElementById("frame-number"),reduced=matchMedia("(prefers-reduced-motion: reduce)");let frame=0,playing=false,last=0,state=structuredClone(data.interactions.initialState);
+const renderInteractionState=()=>{for(const node of scene.querySelectorAll("[data-element-id]")){const id=node.getAttribute("data-element-id"),offset=state.offsets[id],base=node.dataset.baseTransform??"";node.setAttribute("aria-pressed",String(id===state.selectedElementId));node.setAttribute("data-selected",String(id===state.selectedElementId));node.setAttribute("transform",(base+" translate("+(offset?.x??0)+" "+(offset?.y??0)+")").trim())}};
+const dispatch=(event)=>{const binding=data.interactions.bindings.find((candidate)=>candidate.target===event.target&&candidate.event.kind===event.kind&&(candidate.event.kind!=="keyboard"||candidate.event.key===event.key));if(!binding)return;if(binding.action.kind==="select")state={...state,selectedElementId:binding.target};else if(binding.action.kind==="move"){const current=state.offsets[binding.target]??{x:0,y:0},multiplier=event.shiftKey?10:1;state={selectedElementId:binding.target,offsets:{...state.offsets,[binding.target]:{x:current.x+binding.action.x*multiplier,y:current.y+binding.action.y*multiplier}}}}renderInteractionState()};
+const bindInteractions=()=>{for(const node of scene.querySelectorAll("[data-element-id]")){const target=node.getAttribute("data-element-id");if(!target)continue;node.dataset.baseTransform=node.getAttribute("transform")??"";node.setAttribute("tabindex","0");node.setAttribute("role","button");node.addEventListener("pointerdown",()=>dispatch({kind:"pointer",target}));node.addEventListener("focus",()=>dispatch({kind:"focus",target}));node.addEventListener("keydown",(event)=>{if(!["ArrowLeft","ArrowRight","ArrowUp","ArrowDown"].includes(event.key))return;event.preventDefault();event.stopPropagation();dispatch({kind:"keyboard",target,key:event.key,shiftKey:event.shiftKey})})}renderInteractionState()};
+const draw=()=>{scene.innerHTML=data.frames[frame].markup;scrub.value=String(frame);number.value=String(data.frames[frame].frame);bindInteractions()};
 const stop=()=>{playing=false;play.textContent="Play"};
 const seek=(next)=>{stop();frame=Math.max(0,Math.min(data.frames.length-1,next));draw()};
 const tick=(now)=>{if(!playing)return;if(now-last>=1000/data.fps){frame=(frame+1)%data.frames.length;last=now;draw()}requestAnimationFrame(tick)};
@@ -279,10 +288,11 @@ export async function buildNativeScenePackage(
   const runtimeData = JSON.stringify({
     fps: input.scene.canvas.fps,
     frames,
+    interactions: createNativeInteractionModel(input.scene),
   }).replaceAll("</script", "<\\/script");
   const html = `<!doctype html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self' data:; font-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
-<style>@font-face{font-family:RvsLocal;src:url("assets/${fontName}")}html,body{margin:0;width:100%;height:100%;overflow:hidden;background:${input.scene.palette.background}}body{font-family:RvsLocal,sans-serif}#scene{width:100%;height:calc(100% - 48px)}svg{width:100%;height:100%}#controls{height:48px;display:flex;gap:12px;align-items:center;padding:0 12px;background:#18181c;color:#fff}button,input{min-height:44px}input{flex:1}@media (prefers-reduced-motion: reduce){*{scroll-behavior:auto!important}}</style></head>
+<style>@font-face{font-family:RvsLocal;src:url("assets/${fontName}")}html,body{margin:0;width:100%;height:100%;overflow:hidden;background:${input.scene.palette.background}}body{font-family:RvsLocal,sans-serif}#scene{width:100%;height:calc(100% - 48px)}svg{width:100%;height:100%}#scene [data-element-id]{cursor:pointer}#scene [data-element-id]:focus-visible{outline:3px solid #ffb347;outline-offset:3px}#controls{height:48px;display:flex;gap:12px;align-items:center;padding:0 12px;background:#18181c;color:#fff}button,input{min-width:44px;min-height:44px}input{flex:1}@media (prefers-reduced-motion: reduce){*{scroll-behavior:auto!important}}</style></head>
 <body><div id="scene"></div><div id="controls"><button id="play-pause" type="button">Play</button><label for="frame-scrub">Frame</label><input id="frame-scrub" type="range" min="0" max="${frames.length - 1}" value="0"><output id="frame-number">0</output></div><script id="scene-data" type="application/json">${runtimeData}</script><script>${RUNTIME_SCRIPT}</script></body></html>`;
 
   const capabilityBytes = jsonBytes(input.capability);

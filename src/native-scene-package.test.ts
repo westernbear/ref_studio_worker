@@ -13,9 +13,62 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { fixtureSpec } from "./contracts/index.js";
 import {
+  applyNativeInteraction,
   buildNativeScenePackage,
+  createNativeInteractionModel,
+  parseNativeInteractionEvent,
   verifyNativeScenePackage,
 } from "./native-scene-package.js";
+
+describe("native scene interactions", () => {
+  it("creates typed deterministic pointer keyboard and focus bindings", () => {
+    const model = createNativeInteractionModel(fixtureSpec);
+
+    expect(model.initialState).toEqual({
+      selectedElementId: "headline",
+      offsets: {},
+    });
+    expect(new Set(model.bindings.map(({ event }) => event.kind))).toEqual(
+      new Set(["pointer", "keyboard", "focus"]),
+    );
+    expect(JSON.stringify(model)).not.toMatch(/source|javascript|eval/iu);
+  });
+
+  it("applies allowlisted activation focus and movement while ignoring unsupported input", () => {
+    const model = createNativeInteractionModel(fixtureSpec);
+    const focused = applyNativeInteraction(model, model.initialState, {
+      kind: "focus",
+      target: "closer",
+    });
+    const moved = applyNativeInteraction(model, focused, {
+      kind: "keyboard",
+      target: "closer",
+      key: "ArrowRight",
+      shiftKey: true,
+    });
+
+    expect(focused.selectedElementId).toBe("closer");
+    expect(moved.offsets.closer).toEqual({ x: 10, y: 0 });
+    expect(
+      applyNativeInteraction(model, moved, {
+        kind: "pointer",
+        target: "hero-image",
+      }).selectedElementId,
+    ).toBe("hero-image");
+    expect(
+      parseNativeInteractionEvent({ kind: "wheel", target: "closer" }),
+    ).toBeNull();
+    expect(
+      parseNativeInteractionEvent({
+        kind: "keyboard",
+        target: "closer",
+        key: "Delete",
+        source: "alert(1)",
+      }),
+    ).toBeNull();
+    expect(applyNativeInteraction(model, moved, null)).toBe(moved);
+  });
+});
 
 describe("buildNativeScenePackage", () => {
   it("builds a hash-bound offline editable package without external URLs", async () => {
@@ -64,6 +117,14 @@ describe("buildNativeScenePackage", () => {
       expect(html).toContain('id="frame-scrub"');
       expect(html).toContain('event.key === "ArrowRight"');
       expect(html).toContain("prefers-reduced-motion: reduce");
+      expect(html).toContain('"schema":"rvs.scene-interactions.v1"');
+      expect(html).toContain('addEventListener("pointerdown"');
+      expect(html).toContain('addEventListener("focus"');
+      expect(html).toContain("data-selected");
+      expect(html).toContain(":focus-visible");
+      expect(html).toContain("min-width:44px");
+      expect(html).not.toContain('addEventListener("mouseover"');
+      expect(html).not.toMatch(/\beval\s*\(|new Function|https?:\/\//u);
       expect(manifest.schema).toBe("rvs.native-scene-package.v2");
       expect(manifest.sceneDigest).toMatch(/^[a-f0-9]{64}$/u);
       expect(manifest.runtimeFingerprint).toMatch(/^[a-f0-9]{64}$/u);
