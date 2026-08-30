@@ -61,13 +61,11 @@ export function topologicallyOrderedElements(
   const emitted = new Set<string>();
   const ordered: SpecElementV2[] = [];
   while (remaining.size > 0) {
-    const ready = [...remaining.values()]
-      .filter(
-        (element) =>
-          element.parentElementId === undefined ||
-          emitted.has(element.parentElementId),
-      )
-      .sort((left, right) => left.elementId.localeCompare(right.elementId));
+    const ready = [...remaining.values()].filter(
+      (element) =>
+        element.parentElementId === undefined ||
+        emitted.has(element.parentElementId),
+    );
     if (ready.length === 0) fail("PARENT_CYCLE");
     for (const element of ready) {
       ordered.push(element);
