@@ -35,7 +35,7 @@ export class SceneAssetError extends Error {
 
 // The only asset kinds that resolve to a file. A "color" asset's ref *is*
 // its value, so it never needs bytes.
-export type MaterialKind = "image" | "video" | "font";
+export type MaterialKind = "image" | "video" | "audio" | "font";
 
 export type SceneAssetSource =
   | Readonly<{ origin: "attachment"; attachmentId: string }>
@@ -86,7 +86,9 @@ const needsBytes = (
   referenced: ReadonlySet<string>,
 ): asset is SpecAsset & { kind: MaterialKind } =>
   asset.kind !== "color" &&
-  (asset.kind === "font" || referenced.has(asset.assetId));
+  (asset.kind === "font" ||
+    asset.kind === "audio" ||
+    referenced.has(asset.assetId));
 
 const sourceFor = (asset: SpecAsset): SceneAssetSource => {
   if (asset.origin === "attachment") {

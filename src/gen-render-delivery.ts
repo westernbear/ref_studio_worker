@@ -21,6 +21,7 @@ import { buildNativeScenePackage } from "./native-scene-package.js";
 import { archiveScenePackage } from "./scene-package-archive.js";
 import { assembleGeneratedVideo } from "./generated-video-delivery.js";
 import { decodeVideoAsset, type VideoDecodeReport } from "./video-decoder.js";
+import { validateAudioAsset, type ValidatedAudio } from "./audio-decoder.js";
 
 export type GeneratedRenderReport = Readonly<{
   schema: "rvs.gen-render-report.v1";
@@ -141,6 +142,33 @@ export async function renderGeneratedDelivery(
     videoFramePaths.set(asset.assetId, decoded.framePaths);
     videoDecode.push(decoded.report);
   }
+  const audioAssets = input.spec.assets.filter(
+    (candidate) => candidate.kind === "audio",
+  );
+  if (audioAssets.length > 1) throw new Error("MEDIA_QC_FAILED");
+  let audio: ValidatedAudio | undefined;
+  const audioAsset = audioAssets[0];
+  if (audioAsset) {
+    const path = input.assetPaths.get(audioAsset.assetId);
+    const expectedSha256 =
+      input.assetDigests?.get(audioAsset.assetId) ??
+      audioAsset.provenance?.sha256;
+    const contentType = input.assetContentTypes?.get(audioAsset.assetId);
+    if (!path || !expectedSha256 || !contentType)
+      throw new Error("MEDIA_QC_FAILED");
+    audio = await validateAudioAsset(
+      {
+        asset: audioAsset,
+        path,
+        expectedSha256,
+        contentType,
+        canvas,
+        workspace: dirname(input.outPath),
+        signal: input.signal,
+      },
+      command,
+    );
+  }
   const app = createGeneratedRenderApp(
     compilation,
     [{ family: "Wanted Sans", path: fontPath }, ...fontAssets],
@@ -182,6 +210,7 @@ export async function renderGeneratedDelivery(
       outputPath: input.outPath,
       workspace,
       signal,
+      ...(audio ? { audio } : {}),
     },
     command,
   );

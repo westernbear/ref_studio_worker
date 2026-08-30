@@ -165,12 +165,18 @@ export type BeatV2 = BeatBase & { readonly elements: readonly SpecElementV2[] };
 export type Beat = BeatV1 | BeatV2;
 export type SpecAsset = {
   readonly assetId: string;
-  readonly kind: "image" | "video" | "font" | "color";
+  readonly kind: "image" | "video" | "audio" | "font" | "color";
   readonly origin: "attachment" | "evidence" | "generated";
   readonly ref: string;
   // Absent means "flat" -- so every scene authored before this field
   // existed asks for exactly the material it always did.
   readonly form?: SpecAssetForm | undefined;
+  readonly audio?:
+    | {
+        readonly gainDb: number;
+        readonly durationPolicy: "trim" | "pad" | "reject";
+      }
+    | undefined;
   // Two halves with two different authors. `prompt` and `seed` are the
   // scene author's intent -- what to make and with what seed -- and are
   // the only parts the model can honestly supply. `tool` and `sha256` are
@@ -306,10 +312,17 @@ const BeatV2Schema = z
 const SpecAssetSchema = z
   .object({
     assetId: z.string().min(1),
-    kind: z.enum(["image", "video", "font", "color"]),
+    kind: z.enum(["image", "video", "audio", "font", "color"]),
     origin: z.enum(["attachment", "evidence", "generated"]),
     ref: z.string().min(1),
     form: z.enum(SPEC_ASSET_FORMS).optional(),
+    audio: z
+      .object({
+        gainDb: FiniteNumberSchema.min(-24).max(12),
+        durationPolicy: z.enum(["trim", "pad", "reject"]),
+      })
+      .strict()
+      .optional(),
     provenance: z
       .object({
         tool: z.string().min(1).optional(),
@@ -320,7 +333,25 @@ const SpecAssetSchema = z
       .strict()
       .optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((asset, context) => {
+    if (asset.kind === "audio") {
+      if (asset.origin !== "attachment")
+        context.addIssue({
+          code: "custom",
+          message: "audio must be local attachment",
+        });
+      if (asset.audio === undefined)
+        context.addIssue({
+          code: "custom",
+          message: "audio policy is required",
+        });
+    } else if (asset.audio !== undefined)
+      context.addIssue({
+        code: "custom",
+        message: "audio policy is only valid for audio",
+      });
+  });
 
 const SceneSpecBaseShape = {
   mode: z.enum(["SWAP", "REINTERPRET"]),

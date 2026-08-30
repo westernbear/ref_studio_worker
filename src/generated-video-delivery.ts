@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { SceneSpec } from "./contracts/index.js";
 import type { CommandRunner } from "./process-runner.js";
+import type { ValidatedAudio } from "./audio-decoder.js";
 
 const Probe = z.object({
   format: z.object({ duration: z.string() }),
@@ -28,6 +29,7 @@ const Probe = z.object({
 });
 const ProbeMetadata = Probe.omit({ frames: true });
 const ProbeFrames = Probe.pick({ frames: true });
+const ProbeAudio = Probe.pick({ streams: true });
 
 const fraction = (value: string): number => {
   const [numerator, denominator] = value.split("/").map(Number);
@@ -39,12 +41,15 @@ const fraction = (value: string): number => {
 const validate = (
   metadataRaw: string,
   framesRaw: string,
+  audioRaw: string,
   canvas: SceneSpec["canvas"],
+  audioSource?: ValidatedAudio,
 ): Record<string, unknown> => {
   const probe = {
     ...ProbeMetadata.parse(JSON.parse(metadataRaw)),
     ...ProbeFrames.parse(JSON.parse(framesRaw)),
   };
+  probe.streams.push(...ProbeAudio.parse(JSON.parse(audioRaw)).streams);
   const video = probe.streams.find((stream) => stream.codec_type === "video");
   const audio = probe.streams.find((stream) => stream.codec_type === "audio");
   const duration = Number(probe.format.duration);
@@ -87,6 +92,14 @@ const validate = (
     audioCodec: "aac",
     audioProfile: "aac_low",
     audioTargetBitRate: 192_000,
+    audioSource: audioSource
+      ? {
+          sha256: audioSource.sha256,
+          durationMs: Math.round(audioSource.durationSeconds * 1_000),
+          gainDb: audioSource.gainDb,
+          durationPolicy: audioSource.durationPolicy,
+        }
+      : { kind: "deterministic-silence" },
   };
 };
 
@@ -97,9 +110,24 @@ export async function assembleGeneratedVideo(
     outputPath: string;
     workspace: string;
     signal: AbortSignal;
+    audio?: ValidatedAudio;
   }>,
   run: CommandRunner,
 ): Promise<Record<string, unknown>> {
+  const duration = input.canvas.frameCount / input.canvas.fps;
+  const audioInput = input.audio
+    ? ["-i", input.audio.path]
+    : ["-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=48000"];
+  const audioFilter = input.audio
+    ? [
+        `volume=${input.audio.gainDb}dB`,
+        ...(input.audio.durationPolicy === "pad"
+          ? [`apad=pad_dur=${duration}`]
+          : []),
+        `atrim=duration=${duration}`,
+        "asetpts=PTS-STARTPTS",
+      ].join(",")
+    : `atrim=duration=${duration},asetpts=PTS-STARTPTS`;
   await run(
     process.env.RVS_FFMPEG_PATH ?? "ffmpeg",
     [
@@ -111,10 +139,7 @@ export async function assembleGeneratedVideo(
       "0",
       "-i",
       `${input.framesDirectory}/frame-%06d.png`,
-      "-f",
-      "lavfi",
-      "-i",
-      "anullsrc=channel_layout=stereo:sample_rate=48000",
+      ...audioInput,
       "-map",
       "0:v:0",
       "-map",
@@ -122,7 +147,9 @@ export async function assembleGeneratedVideo(
       "-frames:v",
       String(input.canvas.frameCount),
       "-t",
-      String(input.canvas.frameCount / input.canvas.fps),
+      String(duration),
+      "-af",
+      audioFilter,
       "-c:v",
       "libx264",
       "-profile:v",
@@ -169,10 +196,12 @@ export async function assembleGeneratedVideo(
       "-v",
       "error",
       "-count_frames",
+      "-select_streams",
+      "v:0",
       "-show_streams",
       "-show_format",
       "-show_entries",
-      "format=duration:stream=codec_type,codec_name,profile,level,width,height,pix_fmt,avg_frame_rate,nb_read_frames,channels,sample_rate",
+      "format=duration:stream=codec_type,codec_name,profile,level,width,height,pix_fmt,avg_frame_rate,nb_read_frames",
       "-of",
       "json=compact=1",
       input.outputPath,
@@ -195,5 +224,27 @@ export async function assembleGeneratedVideo(
     ],
     { cwd: input.workspace, signal: input.signal },
   );
-  return validate(metadata.stdout, frames.stdout, input.canvas);
+  const audio = await run(
+    process.env.RVS_FFPROBE_PATH ?? "ffprobe",
+    [
+      "-v",
+      "error",
+      "-select_streams",
+      "a:0",
+      "-show_streams",
+      "-show_entries",
+      "stream=codec_type,codec_name,profile,channels,sample_rate",
+      "-of",
+      "json=compact=1",
+      input.outputPath,
+    ],
+    { cwd: input.workspace, signal: input.signal },
+  );
+  return validate(
+    metadata.stdout,
+    frames.stdout,
+    audio.stdout,
+    input.canvas,
+    input.audio,
+  );
 }

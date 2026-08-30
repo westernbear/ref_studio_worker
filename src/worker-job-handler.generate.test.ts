@@ -615,4 +615,24 @@ describe("the gen-render worker phase", () => {
       ),
     ).rejects.toThrow(/WORKER_ASSET_DIGEST_MISMATCH/u);
   });
+
+  it("publishes nothing when audio validation or mux is cancelled", async () => {
+    const fake = api();
+    const controller = new AbortController();
+    const handler = createWorkflowJobHandler({
+      api: fake,
+      renderGenerated: vi.fn(async ({ signal }) => {
+        controller.abort(new Error("WORKER_JOB_CANCELLED"));
+        expect(signal.aborted).toBe(true);
+        throw signal.reason;
+      }),
+    } as unknown as WorkflowPipelineDependencies);
+
+    await expect(
+      handler(job("gen-render", spec(), { assets: [] }), controller.signal),
+    ).rejects.toThrow("WORKER_JOB_CANCELLED");
+    expect(fake.uploadGeneratedArtifact).not.toHaveBeenCalled();
+    expect(fake.uploadScenePackageArtifact).not.toHaveBeenCalled();
+    expect(fake.uploadSafetySample).not.toHaveBeenCalled();
+  });
 });

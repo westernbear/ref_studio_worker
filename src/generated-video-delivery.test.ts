@@ -51,11 +51,18 @@ describe("assembleGeneratedVideo", () => {
     });
     const run: CommandRunner = async (command, args) => {
       if (!command.endsWith("ffprobe")) return { stdout: "", stderr: "" };
-      const stdout = args.includes("-select_streams")
-        ? JSON.stringify({ frames: videoFrames })
-        : args.includes("-show_frames")
-          ? combinedProbe
-          : JSON.stringify(metadataProbe);
+      const selection = args[args.indexOf("-select_streams") + 1];
+      const stdout =
+        selection === "v:0" && args.includes("-show_frames")
+          ? JSON.stringify({ frames: videoFrames })
+          : selection === "a:0"
+            ? JSON.stringify({ streams: [metadataProbe.streams[1]] })
+            : args.includes("-show_frames")
+              ? combinedProbe
+              : JSON.stringify({
+                  ...metadataProbe,
+                  streams: [metadataProbe.streams[0]],
+                });
       return {
         stdout: stdout.slice(-(64 * 1024)),
         stderr: "",
