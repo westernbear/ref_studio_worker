@@ -436,17 +436,13 @@ export const createWorkflowJobHandler = (
         );
         const generatedSignal = AbortSignal.any([signal, generatedDeadline]);
         try {
-          // ponytail: a chat-driven scene patch re-renders the whole scene
-          // here, every time, even when only a handful of beats actually
-          // changed (see apps/api/src/refine-prompt.ts's applyScenePatch,
-          // which leaves the changed beat ids on the job record but does not
-          // act on them). Redrawing only the changed beats' frames and
-          // reusing the rest would cut re-render time, but it requires
-          // keeping the previous attempt's frame PNGs around -- several
-          // hundred megabytes per job -- and nobody has measured whether
-          // that storage cost is worth it or whether a full re-render is
-          // even slow enough to matter. Do this only once a real job's
-          // re-render latency has been measured and found to need it.
+          const renderCachePath = join(
+            root,
+            "rvs-render-cache",
+            createHash("sha256")
+              .update(`${payload.tenantId}\0${job.jobId}`)
+              .digest("hex"),
+          );
           const report = await renderGenerated(
             {
               spec,
@@ -456,6 +452,7 @@ export const createWorkflowJobHandler = (
               outPath: outputPath,
               signal: generatedSignal,
               scenePackagePath: join(workspace, "scene-package"),
+              renderCachePath,
             },
             { runCommand: command },
           );

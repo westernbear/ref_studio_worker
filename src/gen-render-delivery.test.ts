@@ -101,6 +101,137 @@ const fakeCapture = async (
 };
 
 describe("renderGeneratedDelivery", () => {
+  it("re-renders only the changed beat when a verified frame cache exists", async () => {
+    const root = await mkdtemp(join(tmpdir(), "rvs-partial-beat-"));
+    const captures: number[] = [];
+    const twoBeatSpec: SceneSpec = {
+      ...shortFixtureSpec,
+      beats: [
+        {
+          ...shortFixtureSpec.beats[0]!,
+          beatId: "beat-a",
+          endFrame: 15,
+          elements: shortFixtureSpec.beats[0]!.elements.map((element) => ({
+            ...element,
+            keyframes: [{ frame: 0, opacity: 1, ease: "linear" }],
+          })),
+        },
+        {
+          ...shortFixtureSpec.beats[0]!,
+          beatId: "beat-b",
+          startFrame: 15,
+          elements: shortFixtureSpec.beats[0]!.elements.map((element) => ({
+            ...element,
+            elementId: "headline-b",
+            content: "SECOND",
+            keyframes: [{ frame: 15, opacity: 1, ease: "linear" }],
+          })),
+        },
+      ],
+    };
+    const fakeFfmpeg: CommandRunner = async (command, args) => {
+      if (command.endsWith("ffprobe"))
+        return { stdout: JSON.stringify(probe), stderr: "" };
+      const output = args.at(-1);
+      if (!output) throw new Error("TEST_OUTPUT_PATH_MISSING");
+      await writeFile(output, "media");
+      return { stdout: "", stderr: "" };
+    };
+    const capture = async (
+      input: BrowserCaptureInput,
+    ): Promise<BrowserCaptureReport> => {
+      captures.push(input.frames.length);
+      const frameSha256: string[] = [];
+      for (const [index, frame] of input.frames.entries()) {
+        const bytes = `frame:${frame.frame}:${frame.markup}`;
+        await writeFile(
+          join(
+            input.framesDirectory,
+            `frame-${String(index).padStart(6, "0")}.png`,
+          ),
+          bytes,
+        );
+        frameSha256.push(createHash("sha256").update(bytes).digest("hex"));
+        await input.onFrame(index + 1, input.frames.length);
+      }
+      return {
+        chromiumVersion: "151.0.7922.138",
+        renderer: "ANGLE SwiftShader",
+        fontReady: true,
+        webgl2: true,
+        networkPolicy: "external-blocked",
+        repeatedFrameByteIdentity: true,
+        runtimeSnapshotDigest: "b".repeat(64),
+        frameSha256,
+        passIds: [],
+        shaderDiagnostics: [],
+        limits: {},
+      };
+    };
+    try {
+      const first = await renderGeneratedDelivery(
+        {
+          spec: twoBeatSpec,
+          assetPaths: new Map(),
+          outPath: join(root, "first", "out.mp4"),
+          signal: new AbortController().signal,
+          renderCachePath: join(root, "cache"),
+        },
+        { captureFrames: capture, runCommand: fakeFfmpeg },
+      );
+      const changed: SceneSpec = {
+        ...twoBeatSpec,
+        beats: [
+          twoBeatSpec.beats[0]!,
+          {
+            ...twoBeatSpec.beats[1]!,
+            elements: twoBeatSpec.beats[1]!.elements.map((element) => ({
+              ...element,
+              content: "CHANGED",
+            })),
+          },
+        ],
+      };
+      const second = await renderGeneratedDelivery(
+        {
+          spec: changed,
+          assetPaths: new Map(),
+          outPath: join(root, "second", "out.mp4"),
+          signal: new AbortController().signal,
+          renderCachePath: join(root, "cache"),
+        },
+        { captureFrames: capture, runCommand: fakeFfmpeg },
+      );
+      const fullChanged = await renderGeneratedDelivery(
+        {
+          spec: changed,
+          assetPaths: new Map(),
+          outPath: join(root, "full-changed", "out.mp4"),
+          signal: new AbortController().signal,
+        },
+        { captureFrames: capture, runCommand: fakeFfmpeg },
+      );
+
+      expect(captures).toEqual([30, 15, 30]);
+      expect(second.frameSha256).toEqual(fullChanged.frameSha256);
+      expect(second.frameSha256.slice(0, 15)).toEqual(
+        first.frameSha256.slice(0, 15),
+      );
+      expect(second.renderCache).toMatchObject({
+        mode: "partial",
+        renderedBeatIds: ["beat-b"],
+        reusedBeatIds: ["beat-a"],
+      });
+      expect(first.renderCache.beats).toHaveLength(2);
+      expect(first.renderCache.beats.every((beat) => beat.elapsedMs >= 0)).toBe(
+        true,
+      );
+      expect(first.renderCache.peakRssBytes).toBeGreaterThan(0);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("rejects a missing or mismatched supplied video content type before ffprobe", async () => {
     const workspace = await mkdtemp(join(tmpdir(), "rvs-video-content-type-"));
     try {

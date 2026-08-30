@@ -585,6 +585,14 @@ describe("the gen-render worker phase", () => {
     });
     expect(result["report"]).not.toHaveProperty("safetySampleFramePath");
     expect(result["report"]).not.toHaveProperty("scenePackageArchivePath");
+    expect(renderGenerated).toHaveBeenCalledWith(
+      expect.objectContaining({
+        renderCachePath: expect.stringMatching(
+          /rvs-render-cache\/[a-f0-9]{64}$/u,
+        ),
+      }),
+      expect.any(Object),
+    );
     expect(fake.uploadScenePackageArtifact).toHaveBeenCalledWith(
       "job-a",
       expect.stringMatching(/scene-package\.tar$/u),

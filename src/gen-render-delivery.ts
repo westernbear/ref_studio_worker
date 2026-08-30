@@ -22,6 +22,17 @@ import { archiveScenePackage } from "./scene-package-archive.js";
 import { assembleGeneratedVideo } from "./generated-video-delivery.js";
 import { decodeVideoAsset, type VideoDecodeReport } from "./video-decoder.js";
 import { validateAudioAsset, type ValidatedAudio } from "./audio-decoder.js";
+import {
+  commitPartialRender,
+  materializePartialFrames,
+  preparePartialRender,
+} from "./partial-render-cache.js";
+import {
+  REGISTERED_RUNTIME,
+  REGISTERED_RUNTIME_DIGEST,
+} from "./runtime-snapshot.js";
+
+const SCENE_COMPILER_VERSION = "scene-spec-compiler-v1";
 
 export type GeneratedRenderReport = Readonly<{
   schema: "rvs.gen-render-report.v1";
@@ -45,6 +56,20 @@ export type GeneratedRenderReport = Readonly<{
   }>;
   qc: Readonly<Record<string, unknown>>;
   videoDecode: readonly VideoDecodeReport[];
+  renderCache: Readonly<{
+    mode: "full" | "partial";
+    reason: string;
+    cacheKey: string;
+    renderedBeatIds: readonly string[];
+    reusedBeatIds: readonly string[];
+    elapsedMs: number;
+    peakRssBytes: number;
+    beats: readonly Readonly<{
+      beatId: string;
+      elapsedMs: number;
+      peakRssBytes: number;
+    }>[];
+  }>;
   // A local worker-filesystem path, for the content-safety sample upload --
   // never sent to the API, which keeps its report schema strict.
   safetySampleFramePath: string;
@@ -71,6 +96,7 @@ export async function renderGeneratedDelivery(
     readonly outPath: string;
     readonly signal: AbortSignal;
     readonly scenePackagePath?: string;
+    readonly renderCachePath?: string;
   }>,
   dependencies: RenderDeliveryDependencies = {},
 ): Promise<GeneratedRenderReport> {
@@ -185,24 +211,100 @@ export async function renderGeneratedDelivery(
   const framesDirectory = join(workspace, "gen-frames");
   await mkdir(framesDirectory, { recursive: true });
   const signal = input.signal;
+  const renderPlan = await preparePartialRender({
+    spec: input.spec,
+    assetDigests: input.assetDigests ?? new Map(),
+    runtimeFingerprint: REGISTERED_RUNTIME_DIGEST,
+    compilerVersion: SCENE_COMPILER_VERSION,
+    ...(input.renderCachePath ? { cacheDirectory: input.renderCachePath } : {}),
+  });
+  const selectedFrames = renderPlan.framesToRender.map((frame) => {
+    const rendered = renderedFrames[frame];
+    if (!rendered) throw new Error("PARTIAL_RENDER_FRAME_OUT_OF_RANGE");
+    return rendered;
+  });
+  const captureDirectory = input.renderCachePath
+    ? join(workspace, "gen-captured-frames")
+    : framesDirectory;
+  await mkdir(captureDirectory, { recursive: true });
+  const beatTelemetry = new Map<
+    string,
+    { elapsedMs: number; peakRssBytes: number }
+  >();
+  let lastFrameAt = process.hrtime.bigint();
+  const renderStartedAt = lastFrameAt;
+  let peakRssBytes = process.memoryUsage.rss();
 
   const captureInput: BrowserCaptureInput = {
     workspace,
-    framesDirectory,
+    framesDirectory: captureDirectory,
     chromePath:
       dependencies.chromePath ??
       process.env.CHROME_PATH ??
       "/opt/chrome/chrome",
     fontPath,
-    frames: renderedFrames,
+    frames: selectedFrames,
     signal,
-    onFrame: async () => undefined,
+    onFrame: async (completed) => {
+      const now = process.hrtime.bigint();
+      const frame = renderPlan.framesToRender[completed - 1];
+      const beat = renderPlan.beats.find(
+        (candidate) =>
+          frame !== undefined &&
+          frame >= candidate.startFrame &&
+          frame < candidate.endFrame,
+      );
+      if (beat) {
+        const current = beatTelemetry.get(beat.beatId) ?? {
+          elapsedMs: 0,
+          peakRssBytes: 0,
+        };
+        current.elapsedMs += Number(now - lastFrameAt) / 1_000_000;
+        current.peakRssBytes = Math.max(
+          current.peakRssBytes,
+          process.memoryUsage.rss(),
+        );
+        beatTelemetry.set(beat.beatId, current);
+      }
+      lastFrameAt = now;
+      peakRssBytes = Math.max(peakRssBytes, process.memoryUsage.rss());
+    },
     renderContract: {
       kind: "generated",
       canvas: { width: canvas.width, height: canvas.height },
     },
   };
-  const captureReport: BrowserCaptureReport = await capture(captureInput);
+  const captureReport: BrowserCaptureReport = selectedFrames.length
+    ? await capture(captureInput)
+    : {
+        chromiumVersion: REGISTERED_RUNTIME.chrome.version,
+        renderer: REGISTERED_RUNTIME.renderer,
+        fontReady: true,
+        webgl2: true,
+        networkPolicy: "external-blocked",
+        repeatedFrameByteIdentity: true,
+        runtimeSnapshotDigest: REGISTERED_RUNTIME_DIGEST,
+        frameSha256: [],
+        passIds: [],
+        shaderDiagnostics: [],
+        limits: {},
+      };
+  const finalFrameSha256 = input.renderCachePath
+    ? await materializePartialFrames(
+        renderPlan,
+        captureDirectory,
+        framesDirectory,
+        signal,
+      )
+    : captureReport.frameSha256;
+  if (
+    input.renderCachePath &&
+    captureReport.frameSha256.some(
+      (hash, index) =>
+        hash !== finalFrameSha256[renderPlan.framesToRender[index] ?? -1],
+    )
+  )
+    throw new Error("PARTIAL_RENDER_CAPTURE_HASH_MISMATCH");
 
   const qc = await assembleGeneratedVideo(
     {
@@ -241,7 +343,7 @@ export async function renderGeneratedDelivery(
         },
         verification: {
           status: "PASS",
-          frameSha256: captureReport.frameSha256,
+          frameSha256: finalFrameSha256,
           repeatedFrameByteIdentity: captureReport.repeatedFrameByteIdentity,
           qc: qcWithVideoDecode,
         },
@@ -258,6 +360,13 @@ export async function renderGeneratedDelivery(
       command,
     );
 
+  await commitPartialRender(
+    renderPlan,
+    framesDirectory,
+    finalFrameSha256,
+    signal,
+  );
+
   const outputHash = createHash("sha256");
   let outputBytes = 0;
   for await (const chunk of createReadStream(input.outPath)) {
@@ -270,7 +379,7 @@ export async function renderGeneratedDelivery(
     specDigest: compilation.digest,
     outputSha256: outputHash.digest("hex"),
     outputBytes,
-    frameSha256: captureReport.frameSha256,
+    frameSha256: finalFrameSha256,
     runtime: {
       chromiumVersion: captureReport.chromiumVersion,
       renderer: captureReport.renderer,
@@ -282,6 +391,21 @@ export async function renderGeneratedDelivery(
     },
     qc: qcWithVideoDecode,
     videoDecode,
+    renderCache: {
+      mode: renderPlan.mode,
+      reason: renderPlan.reason,
+      cacheKey: renderPlan.cacheKey,
+      renderedBeatIds: renderPlan.renderedBeatIds,
+      reusedBeatIds: renderPlan.reusedBeatIds,
+      elapsedMs: Number(process.hrtime.bigint() - renderStartedAt) / 1_000_000,
+      peakRssBytes,
+      beats: renderPlan.beats.map((beat) => ({
+        beatId: beat.beatId,
+        elapsedMs: beatTelemetry.get(beat.beatId)?.elapsedMs ?? 0,
+        peakRssBytes:
+          beatTelemetry.get(beat.beatId)?.peakRssBytes ?? peakRssBytes,
+      })),
+    },
     // The middle frame, same choice the restore delivery makes -- the most
     // representative single frame of the film.
     safetySampleFramePath: join(
