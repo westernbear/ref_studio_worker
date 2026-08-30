@@ -71,6 +71,50 @@ describe("native scene interactions", () => {
 });
 
 describe("buildNativeScenePackage", () => {
+  it("treats only the exact SVG XML namespace as inert metadata", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "rvs-scene-namespace-"));
+    try {
+      const fontPath = join(workspace, "font.ttf");
+      await writeFile(fontPath, "font");
+      await expect(
+        buildNativeScenePackage({
+          directory: join(workspace, "valid"),
+          scene: fixtureSpec,
+          assetPaths: new Map(),
+          fontPath,
+          frames: [
+            {
+              frame: 0,
+              markup:
+                '<svg xmlns="http://www.w3.org/2000/svg"><text>offline</text></svg>',
+            },
+          ],
+          capability: {},
+          verification: {},
+        }),
+      ).resolves.toMatchObject({ directory: join(workspace, "valid") });
+      await expect(
+        buildNativeScenePackage({
+          directory: join(workspace, "lookalike"),
+          scene: fixtureSpec,
+          assetPaths: new Map(),
+          fontPath,
+          frames: [
+            {
+              frame: 0,
+              markup:
+                '<svg xmlns="http://www.w3.org/2000/svg?remote"><text>unsafe</text></svg>',
+            },
+          ],
+          capability: {},
+          verification: {},
+        }),
+      ).rejects.toThrow("SCENE_PACKAGE_UNSAFE_CONTENT");
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
   it("builds a hash-bound offline editable package without external URLs", async () => {
     // Given
     const workspace = await mkdtemp(join(tmpdir(), "rvs-scene-package-"));
