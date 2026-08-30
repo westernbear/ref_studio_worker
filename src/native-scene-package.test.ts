@@ -166,6 +166,20 @@ describe("buildNativeScenePackage", () => {
     ["mail URL", '<svg><a href="mailto:private@example.invalid"/></svg>'],
     ["data URL", '<svg><image href="data:image/png;base64,AA=="/></svg>'],
     ["blob URL", '<svg><image href="blob:private"/></svg>'],
+    [
+      "object data URL",
+      '<svg><foreignObject><object data="https://example.invalid/payload"></object></foreignObject></svg>',
+    ],
+    [
+      "meta refresh",
+      '<svg><foreignObject><meta http-equiv="refresh" content="0;url=https://example.invalid/"></foreignObject></svg>',
+    ],
+    [
+      "iframe resource",
+      '<svg><foreignObject><iframe src="assets/local.html"></iframe></foreignObject></svg>',
+    ],
+    ["link resource", '<svg><link href="#local" rel="stylesheet"/></svg>'],
+    ["source resource", '<svg><source src="#local"/></svg>'],
   ])("rejects %s markup", async (_name, markup) => {
     const workspace = await mkdtemp(
       join(tmpdir(), "rvs-scene-package-hostile-"),

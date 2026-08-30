@@ -47,9 +47,9 @@ const jsonBytes = (value: unknown): Buffer =>
 const SAFE_PATH =
   /^(?:assets\/[a-f0-9]{64}\.[a-z0-9]{1,10}|reports\/(?:capability|verification)\.json|(?:scene|assets|capability|verification)\.json|index\.html)$/u;
 const UNSAFE_CONTENT =
-  /(?:<\s*script\b|\bon[a-z]+\s*=|\beval\s*\(|@import\b|\bsrcset\s*=)/iu;
+  /(?:<\s*(?:script|foreignObject|object|embed|iframe|source|link|meta|base|form|input|button|audio|video)\b|\bon[a-z]+\s*=|\beval\s*\(|@import\b|\bsrcset\s*=)/iu;
 const URI_ATTRIBUTE =
-  /\b(?:href|src|xlink:href|poster|action|formaction)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/giu;
+  /\b(?:href|src|xlink:href|data|poster|action|formaction|background|cite)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/giu;
 const CSS_URL = /url\(\s*(?:"([^"]*)"|'([^']*)'|([^\s)'"]+))\s*\)/giu;
 const HASH_ASSET = /^assets\/[a-f0-9]{64}\.[a-z0-9]{1,10}$/u;
 
