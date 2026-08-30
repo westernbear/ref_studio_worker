@@ -1,4 +1,3 @@
-import { dirname } from "node:path";
 import type { CommandRunner } from "./process-runner.js";
 
 export async function archiveScenePackage(
@@ -16,12 +15,13 @@ export async function archiveScenePackage(
       "--group=0",
       "--numeric-owner",
       "--format=ustar",
+      "--mode=go=rX,u+rwX",
       "-cf",
       outputPath,
       "-C",
-      dirname(packageDirectory),
-      packageDirectory.slice(dirname(packageDirectory).length + 1),
+      packageDirectory,
+      ".",
     ],
-    { cwd: dirname(packageDirectory), signal },
+    { cwd: packageDirectory, signal },
   );
 }
