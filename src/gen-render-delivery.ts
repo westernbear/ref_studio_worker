@@ -41,6 +41,7 @@ export type GeneratedRenderReport = Readonly<{
     webgl2: boolean;
     networkPolicy: string;
     repeatedFrameByteIdentity: boolean;
+    runtimeSnapshotDigest: string;
   }>;
   qc: Readonly<Record<string, unknown>>;
   videoDecode: readonly VideoDecodeReport[];
@@ -214,7 +215,11 @@ export async function renderGeneratedDelivery(
     },
     command,
   );
-  const qcWithVideoDecode = { ...qc, videoDecode };
+  const qcWithVideoDecode = {
+    ...qc,
+    videoDecode,
+    runtimeSnapshotDigest: captureReport.runtimeSnapshotDigest,
+  };
 
   const scenePackage = input.scenePackagePath
     ? await buildNativeScenePackage({
@@ -273,6 +278,7 @@ export async function renderGeneratedDelivery(
       webgl2: captureReport.webgl2,
       networkPolicy: captureReport.networkPolicy,
       repeatedFrameByteIdentity: captureReport.repeatedFrameByteIdentity,
+      runtimeSnapshotDigest: captureReport.runtimeSnapshotDigest,
     },
     qc: qcWithVideoDecode,
     videoDecode,

@@ -1,5 +1,7 @@
+import { spawn } from "node:child_process";
+import { once } from "node:events";
 import { existsSync } from "node:fs";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -314,7 +316,7 @@ const landscapeFixtureSpec: SceneSpec = {
 
 describe("renderGeneratedDelivery determinism", () => {
   it.skipIf(!canRunRealBrowser)(
-    "produces identical frame hashes across two runs",
+    "produces identical frames, metadata and packages across independent processes and CPU load",
     async () => {
       // Each run gets its own workspace -- two genuinely independent
       // processes, not two calls sharing one Chromium profile directory
@@ -331,6 +333,9 @@ describe("renderGeneratedDelivery determinism", () => {
       const workspaceB = await mkdtemp(
         join(tmpdir(), "rvs-gen-determinism-b-"),
       );
+      const workspaceC = await mkdtemp(
+        join(tmpdir(), "rvs-gen-determinism-c-"),
+      );
       const assetDir = await mkdtemp(
         join(tmpdir(), "rvs-gen-determinism-asset-"),
       );
@@ -345,6 +350,7 @@ describe("renderGeneratedDelivery determinism", () => {
             spec: shortFixtureSpec,
             assetPaths,
             outPath: join(workspaceA, "out.mp4"),
+            scenePackagePath: join(workspaceA, "package"),
             signal: new AbortController().signal,
           },
           deps,
@@ -354,11 +360,43 @@ describe("renderGeneratedDelivery determinism", () => {
             spec: shortFixtureSpec,
             assetPaths,
             outPath: join(workspaceB, "out.mp4"),
+            scenePackagePath: join(workspaceB, "package"),
             signal: new AbortController().signal,
           },
           deps,
         );
         expect(b.frameSha256).toEqual(a.frameSha256);
+        expect(b.qc).toEqual(a.qc);
+        expect(
+          await readFile(join(workspaceB, "package", "manifest.json")),
+        ).toEqual(await readFile(join(workspaceA, "package", "manifest.json")));
+
+        const load = spawn(process.execPath, [
+          "-e",
+          "for(;;){for(let i=0;i<1e7;i++)Math.sqrt(i)}",
+        ]);
+        try {
+          const underLoad = await renderGeneratedDelivery(
+            {
+              spec: shortFixtureSpec,
+              assetPaths,
+              outPath: join(workspaceC, "out.mp4"),
+              scenePackagePath: join(workspaceC, "package"),
+              signal: new AbortController().signal,
+            },
+            deps,
+          );
+          expect(underLoad.frameSha256).toEqual(a.frameSha256);
+          expect(underLoad.qc).toEqual(a.qc);
+          expect(
+            await readFile(join(workspaceC, "package", "manifest.json")),
+          ).toEqual(
+            await readFile(join(workspaceA, "package", "manifest.json")),
+          );
+        } finally {
+          load.kill("SIGTERM");
+          if (load.exitCode === null) await once(load, "exit");
+        }
         // Sanity that something actually rendered and changed across
         // frames, not that every frame collapsed to the same output (which
         // would make the equality assertion above vacuous): the
@@ -368,6 +406,7 @@ describe("renderGeneratedDelivery determinism", () => {
       } finally {
         await rm(workspaceA, { recursive: true, force: true });
         await rm(workspaceB, { recursive: true, force: true });
+        await rm(workspaceC, { recursive: true, force: true });
         await rm(assetDir, { recursive: true, force: true });
       }
     },

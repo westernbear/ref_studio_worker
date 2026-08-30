@@ -11,6 +11,7 @@ import { extname, join, posix, relative, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { SceneSpec } from "./contracts/index.js";
 import type { RenderedFrame } from "./render-app/index.js";
+import { REGISTERED_RUNTIME_DIGEST } from "./runtime-snapshot.js";
 
 type NativeScenePackageInput = Readonly<{
   directory: string;
@@ -32,6 +33,7 @@ type ManifestV2 = Readonly<{
   schema: "rvs.native-scene-package.v2";
   sceneDigest: string;
   runtimeFingerprint: string;
+  registeredRuntimeDigest: string;
   creationPolicy: Readonly<{
     assets: "sha256-named";
     externalUrls: "forbidden";
@@ -187,6 +189,7 @@ export async function verifyNativeScenePackage(
       parsed.schema !== "rvs.native-scene-package.v2" ||
       !/^[a-f0-9]{64}$/u.test(parsed.sceneDigest ?? "") ||
       !/^[a-f0-9]{64}$/u.test(parsed.runtimeFingerprint ?? "") ||
+      parsed.registeredRuntimeDigest !== REGISTERED_RUNTIME_DIGEST ||
       !Array.isArray(parsed.files)
     )
       throw new Error("invalid manifest");
@@ -310,6 +313,7 @@ export async function buildNativeScenePackage(
     schema: "rvs.native-scene-package.v2",
     sceneDigest: digest(sceneBytes),
     runtimeFingerprint: digest(Buffer.from(RUNTIME_SCRIPT)),
+    registeredRuntimeDigest: REGISTERED_RUNTIME_DIGEST,
     creationPolicy: {
       assets: "sha256-named",
       externalUrls: "forbidden",
