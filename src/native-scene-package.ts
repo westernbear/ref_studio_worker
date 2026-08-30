@@ -47,11 +47,43 @@ const jsonBytes = (value: unknown): Buffer =>
 const SAFE_PATH =
   /^(?:assets\/[a-f0-9]{64}\.[a-z0-9]{1,10}|reports\/(?:capability|verification)\.json|(?:scene|assets|capability|verification)\.json|index\.html)$/u;
 const UNSAFE_CONTENT =
-  /(?:<\s*(?:script|foreignObject|object|embed|iframe|source|link|meta|base|form|input|button|audio|video)\b|\bon[a-z]+\s*=|\beval\s*\(|@import\b|\bsrcset\s*=)/iu;
-const URI_ATTRIBUTE =
-  /\b(?:href|src|xlink:href|data|poster|action|formaction|background|cite)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/giu;
-const CSS_URL = /url\(\s*(?:"([^"]*)"|'([^']*)'|([^\s)'"]+))\s*\)/giu;
+  /(?:\bon[a-z]+\s*=|\beval\s*\(|@import\b|\bsrcset\s*=|\bimage-set\s*\(|\burl\s*\()/iu;
 const HASH_ASSET = /^assets\/[a-f0-9]{64}\.[a-z0-9]{1,10}$/u;
+const STATIC_TAGS = new Set(["svg", "g", "rect", "text", "image"]);
+const COMMON_DRAW_ATTRIBUTES = new Set([
+  "id",
+  "data-element-id",
+  "data-asset-ref",
+  "data-owner-id",
+  "data-editable",
+  "data-bloom",
+  "data-defocus",
+  "data-rim",
+  "x",
+  "y",
+  "width",
+  "height",
+  "opacity",
+  "transform",
+  "fill",
+  "stroke",
+]);
+const ATTRIBUTES_BY_TAG: Readonly<Record<string, ReadonlySet<string>>> = {
+  svg: new Set(["data-frame", "role", "xmlns"]),
+  g: new Set(["data-layer-order"]),
+  rect: new Set([...COMMON_DRAW_ATTRIBUTES, "style"]),
+  text: new Set([
+    ...COMMON_DRAW_ATTRIBUTES,
+    "font-size",
+    "font-weight",
+    "textLength",
+    "lengthAdjust",
+  ]),
+  image: new Set([...COMMON_DRAW_ATTRIBUTES, "href", "preserveAspectRatio"]),
+};
+const TAG = /<\s*(\/?)\s*([A-Za-z][A-Za-z0-9:-]*)([^>]*)>/gu;
+const ATTRIBUTE =
+  /([A-Za-z_:][A-Za-z0-9:._-]*)\s*=\s*(?:"([^"]*)"|'([^']*)')/gu;
 
 const safeExtension = (path: string): string => {
   const extension = extname(path).toLowerCase();
@@ -67,15 +99,53 @@ const assertSafeMarkup = (
 ): void => {
   if (UNSAFE_CONTENT.test(markup))
     throw new Error("SCENE_PACKAGE_UNSAFE_CONTENT");
-  const allowed = (value: string): boolean =>
+  const allowedResource = (value: string): boolean =>
     /^#[A-Za-z_][A-Za-z0-9_.:-]*$/u.test(value) ||
     (HASH_ASSET.test(value) && packagedAssets.has(value));
-  for (const match of markup.matchAll(URI_ATTRIBUTE))
-    if (!allowed(match[1] ?? match[2] ?? match[3] ?? ""))
+  const stack: string[] = [];
+  let roots = 0;
+  for (const match of markup.matchAll(TAG)) {
+    const closing = match[1] === "/";
+    const tag = match[2] ?? "";
+    if (!STATIC_TAGS.has(tag)) throw new Error("SCENE_PACKAGE_UNSAFE_CONTENT");
+    if (closing) {
+      if ((match[3] ?? "").trim() !== "" || stack.pop() !== tag)
+        throw new Error("SCENE_PACKAGE_UNSAFE_CONTENT");
+      continue;
+    }
+    if (stack.length === 0) {
+      roots += 1;
+      if (tag !== "svg") throw new Error("SCENE_PACKAGE_UNSAFE_CONTENT");
+    }
+    const rawAttributes = match[3] ?? "";
+    const selfClosing = /\/\s*$/u.test(rawAttributes);
+    const remainder = rawAttributes
+      .replace(ATTRIBUTE, "")
+      .replace(/\/\s*$/u, "");
+    if (remainder.trim() !== "")
       throw new Error("SCENE_PACKAGE_UNSAFE_CONTENT");
-  for (const match of markup.matchAll(CSS_URL))
-    if (!allowed(match[1] ?? match[2] ?? match[3] ?? ""))
-      throw new Error("SCENE_PACKAGE_UNSAFE_CONTENT");
+    const seen = new Set<string>();
+    for (const attribute of rawAttributes.matchAll(ATTRIBUTE)) {
+      const name = attribute[1] ?? "";
+      const value = attribute[2] ?? attribute[3] ?? "";
+      if (seen.has(name) || !ATTRIBUTES_BY_TAG[tag]?.has(name))
+        throw new Error("SCENE_PACKAGE_UNSAFE_CONTENT");
+      seen.add(name);
+      if (name === "href" && !allowedResource(value))
+        throw new Error("SCENE_PACKAGE_UNSAFE_CONTENT");
+      if (name === "style" && value !== "rx:0")
+        throw new Error("SCENE_PACKAGE_UNSAFE_CONTENT");
+      if (name === "xmlns" && value !== "http://www.w3.org/2000/svg")
+        throw new Error("SCENE_PACKAGE_UNSAFE_CONTENT");
+    }
+    if (!selfClosing) stack.push(tag);
+  }
+  if (
+    roots !== 1 ||
+    stack.length !== 0 ||
+    markup.replace(TAG, "").includes("<")
+  )
+    throw new Error("SCENE_PACKAGE_UNSAFE_CONTENT");
 };
 
 const RUNTIME_SCRIPT = `

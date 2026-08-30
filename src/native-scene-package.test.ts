@@ -180,6 +180,18 @@ describe("buildNativeScenePackage", () => {
     ],
     ["link resource", '<svg><link href="#local" rel="stylesheet"/></svg>'],
     ["source resource", '<svg><source src="#local"/></svg>'],
+    [
+      "SVG animate resource",
+      '<svg><rect id="target"/><animate href="#target" attributeName="fill" to="https://example.invalid/a"/></svg>',
+    ],
+    [
+      "SVG set resource",
+      '<svg><rect id="target"/><set href="#target" attributeName="fill" to="https://example.invalid/a"/></svg>',
+    ],
+    [
+      "CSS image-set resource",
+      '<svg><rect style="background-image:image-set(https://example.invalid/a.png 1x)"/></svg>',
+    ],
   ])("rejects %s markup", async (_name, markup) => {
     const workspace = await mkdtemp(
       join(tmpdir(), "rvs-scene-package-hostile-"),
