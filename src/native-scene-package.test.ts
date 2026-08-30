@@ -161,6 +161,11 @@ describe("buildNativeScenePackage", () => {
     ["eval", "<svg><text>eval(unsafe)</text></svg>"],
     ["traversal", '<svg><image href="../private.png"/></svg>'],
     ["absolute path", '<svg><image href="/tmp/private.png"/></svg>'],
+    ["ftp URL", '<svg><image href="ftp://example.invalid/a.png"/></svg>'],
+    ["websocket URL", '<svg><a href="ws://example.invalid/socket"/></svg>'],
+    ["mail URL", '<svg><a href="mailto:private@example.invalid"/></svg>'],
+    ["data URL", '<svg><image href="data:image/png;base64,AA=="/></svg>'],
+    ["blob URL", '<svg><image href="blob:private"/></svg>'],
   ])("rejects %s markup", async (_name, markup) => {
     const workspace = await mkdtemp(
       join(tmpdir(), "rvs-scene-package-hostile-"),
@@ -179,6 +184,36 @@ describe("buildNativeScenePackage", () => {
           verification: {},
         }),
       ).rejects.toThrow("SCENE_PACKAGE_UNSAFE_CONTENT");
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves ordinary prose and packaged hash asset references", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "rvs-scene-package-local-"));
+    try {
+      const assetPath = join(workspace, "source.png");
+      const fontPath = join(workspace, "font.ttf");
+      await writeFile(assetPath, "asset");
+      await writeFile(fontPath, "font");
+      const assetUrl = new URL(`file://${assetPath}`).href;
+      const result = await buildNativeScenePackage({
+        directory: join(workspace, "package"),
+        scene: fixtureSpec,
+        assetPaths: new Map([["hero", assetPath]]),
+        fontPath,
+        frames: [
+          {
+            frame: 0,
+            markup: `<svg><text>ftp, websocket, mail and data are prose labels</text><image href="${assetUrl}"/></svg>`,
+          },
+        ],
+        capability: {},
+        verification: {},
+      });
+      const html = await readFile(join(result.directory, "index.html"), "utf8");
+      expect(html).toContain("ftp, websocket, mail and data are prose labels");
+      expect(html).toMatch(/href=\\"assets\/[a-f0-9]{64}\.png/u);
     } finally {
       await rm(workspace, { recursive: true, force: true });
     }

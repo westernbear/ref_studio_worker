@@ -47,7 +47,11 @@ const jsonBytes = (value: unknown): Buffer =>
 const SAFE_PATH =
   /^(?:assets\/[a-f0-9]{64}\.[a-z0-9]{1,10}|reports\/(?:capability|verification)\.json|(?:scene|assets|capability|verification)\.json|index\.html)$/u;
 const UNSAFE_CONTENT =
-  /(?:https?:|file:|javascript:|(?:^|["'(=\s])\/\/|(?:^|["'(=\s])\.\.\/|(?:href|src)\s*=\s*["']\s*\/|url\(\s*["']?\s*\/|<\s*script\b|\bon[a-z]+\s*=|\beval\s*\()/iu;
+  /(?:<\s*script\b|\bon[a-z]+\s*=|\beval\s*\(|@import\b|\bsrcset\s*=)/iu;
+const URI_ATTRIBUTE =
+  /\b(?:href|src|xlink:href|poster|action|formaction)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/giu;
+const CSS_URL = /url\(\s*(?:"([^"]*)"|'([^']*)'|([^\s)'"]+))\s*\)/giu;
+const HASH_ASSET = /^assets\/[a-f0-9]{64}\.[a-z0-9]{1,10}$/u;
 
 const safeExtension = (path: string): string => {
   const extension = extname(path).toLowerCase();
@@ -57,9 +61,21 @@ const assertRegularFile = async (path: string): Promise<void> => {
   if (!(await lstat(path)).isFile())
     throw new Error("SCENE_PACKAGE_UNSAFE_PATH");
 };
-const assertSafeMarkup = (markup: string): void => {
+const assertSafeMarkup = (
+  markup: string,
+  packagedAssets: ReadonlySet<string>,
+): void => {
   if (UNSAFE_CONTENT.test(markup))
     throw new Error("SCENE_PACKAGE_UNSAFE_CONTENT");
+  const allowed = (value: string): boolean =>
+    /^#[A-Za-z_][A-Za-z0-9_.:-]*$/u.test(value) ||
+    (HASH_ASSET.test(value) && packagedAssets.has(value));
+  for (const match of markup.matchAll(URI_ATTRIBUTE))
+    if (!allowed(match[1] ?? match[2] ?? match[3] ?? ""))
+      throw new Error("SCENE_PACKAGE_UNSAFE_CONTENT");
+  for (const match of markup.matchAll(CSS_URL))
+    if (!allowed(match[1] ?? match[2] ?? match[3] ?? ""))
+      throw new Error("SCENE_PACKAGE_UNSAFE_CONTENT");
 };
 
 const RUNTIME_SCRIPT = `
@@ -173,18 +189,20 @@ export async function buildNativeScenePackage(
   const fontBytes = await readFile(input.fontPath);
   const fontName = `${digest(fontBytes)}${safeExtension(input.fontPath)}`;
   await cp(input.fontPath, join(assetsDirectory, fontName));
+  const packagedAssets = new Set([
+    ...Object.values(copiedAssets),
+    `assets/${fontName}`,
+  ]);
 
   const frames = input.frames.map((rendered) => {
     let markup = rendered.markup;
     for (const [source, target] of replacements)
       markup = markup.replaceAll(source, target);
-    assertSafeMarkup(markup);
+    assertSafeMarkup(markup, packagedAssets);
     return { frame: rendered.frame, markup };
   });
   if (frames.length === 0) throw new Error("SCENE_PACKAGE_EMPTY");
   const sceneBytes = jsonBytes(input.scene);
-  if (/(?:https?:|file:)/iu.test(sceneBytes.toString("utf8")))
-    throw new Error("SCENE_PACKAGE_UNSAFE_CONTENT");
   const runtimeData = JSON.stringify({
     fps: input.scene.canvas.fps,
     frames,
