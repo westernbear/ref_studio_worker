@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 
 export const BLENDER_3D_BUDGET = {
+  // Keep in lockstep with packages/contracts RESOURCE_BUDGETS.maxBlenderTriangles.
   maxTriangles: 250_000,
   maxMaterials: 64,
   maxTextureDimension: 4096,
