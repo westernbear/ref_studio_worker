@@ -123,6 +123,8 @@ describe("buildNativeScenePackage", () => {
       expect(html).toContain("data-selected");
       expect(html).toContain(":focus-visible");
       expect(html).toContain("min-width:44px");
+      expect(html).toContain("Math.max(44,box.width)");
+      expect(html).toContain('hit.setAttribute("pointer-events","all")');
       expect(html).not.toContain('addEventListener("mouseover"');
       expect(html).not.toMatch(/\beval\s*\(|new Function|https?:\/\//u);
       expect(manifest.schema).toBe("rvs.native-scene-package.v2");
