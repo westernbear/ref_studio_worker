@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   parseBlenderCapability,
+  REGISTERED_BLENDER,
   type BlenderCapabilitySnapshot,
 } from "./blender-capability.js";
 import { parseGlbContract } from "./blender-glb-contract.js";
@@ -104,7 +105,7 @@ export type SelfHosted3DMaterialProviderConfig = Readonly<{
   // the same fail-closed stance unavailableMaterialProvider takes.
   baseUrl: string | undefined;
   capability?: BlenderCapabilitySnapshot;
-  blenderPath?: string;
+  containerRuntimePath?: string;
   runCommand?: CommandRunner;
   client?: Hi3DGenClient;
 }>;
@@ -183,6 +184,29 @@ bpy.ops.render.render(write_still=True)
 
 const PNG_SIGNATURE = Uint8Array.from([137, 80, 78, 71, 13, 10, 26, 10]);
 
+export function canonicalizeBlenderPng(bytes: Uint8Array): Uint8Array {
+  if (bytes.byteLength < PNG_SIGNATURE.byteLength)
+    throw new Error("HI3DGEN_RENDER_QC_FAILED");
+  const chunks: Uint8Array[] = [bytes.subarray(0, PNG_SIGNATURE.byteLength)];
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  let offset = PNG_SIGNATURE.byteLength;
+  while (offset + 12 <= bytes.byteLength) {
+    const length = view.getUint32(offset);
+    const end = offset + 12 + length;
+    if (end > bytes.byteLength) throw new Error("HI3DGEN_RENDER_QC_FAILED");
+    const firstTypeByte = bytes[offset + 4];
+    if (
+      firstTypeByte !== undefined &&
+      firstTypeByte >= 65 &&
+      firstTypeByte <= 90
+    )
+      chunks.push(bytes.subarray(offset, end));
+    offset = end;
+  }
+  if (offset !== bytes.byteLength) throw new Error("HI3DGEN_RENDER_QC_FAILED");
+  return new Uint8Array(Buffer.concat(chunks));
+}
+
 // Verifies the rendered PNG is actually the shape asked for -- the same
 // kind of "check, don't just trust" QC gen-render-delivery.ts's ffprobe
 // validation and openai-image-material.ts's IHDR check both do -- before
@@ -220,7 +244,7 @@ export async function renderGlbWithBlender(
     height: number;
     seed: number;
     samples: number;
-    blenderPath: string;
+    containerRuntimePath: string;
     run: CommandRunner;
     signal: AbortSignal;
     capability: BlenderCapabilitySnapshot;
@@ -252,8 +276,8 @@ export async function renderGlbWithBlender(
     await writeFile(
       argsPath,
       JSON.stringify({
-        meshPath,
-        outputPath,
+        meshPath: "/workspace/mesh.glb",
+        outputPath: "/workspace/render.png",
         width: options.width,
         height: options.height,
         seed: options.seed,
@@ -262,21 +286,41 @@ export async function renderGlbWithBlender(
       "utf8",
     );
     await options.run(
-      options.blenderPath,
+      options.containerRuntimePath,
       [
+        "run",
+        "--rm",
+        "--network",
+        "none",
+        "--cpus",
+        "2",
+        "--memory",
+        "4g",
+        "--pids-limit",
+        "256",
+        "--read-only",
+        "--tmpfs",
+        "/tmp:rw,noexec,nosuid,size=512m",
+        "-e",
+        "HOME=/tmp",
+        "--entrypoint",
+        "/usr/bin/blender",
+        "-v",
+        `${workspace}:/workspace`,
+        `${REGISTERED_BLENDER.image}@${options.capability.imageDigest}`,
         "--background",
         "--factory-startup",
         "--disable-autoexec",
         "--python-exit-code",
         "1",
         "--python",
-        scriptPath,
+        "/workspace/render.py",
         "--",
-        argsPath,
+        "/workspace/args.json",
       ],
       { cwd: workspace, signal: options.signal, timeoutMs: 300_000 },
     );
-    const png = await readFile(outputPath);
+    const png = canonicalizeBlenderPng(await readFile(outputPath));
     const ihdr = readPngIhdr(png);
     if (
       !ihdr ||
@@ -301,7 +345,7 @@ export function createSelfHosted3DMaterialProvider(
   config: SelfHosted3DMaterialProviderConfig,
 ): MaterialProvider {
   const baseUrl = config.baseUrl;
-  const blenderPath = config.blenderPath ?? "blender";
+  const containerRuntimePath = config.containerRuntimePath ?? "docker";
   const client = config.client ?? defaultHi3DGenClient;
   const run = config.runCommand ?? runCommand;
   return {
@@ -326,7 +370,7 @@ export function createSelfHosted3DMaterialProvider(
         height: request.canvas.height,
         seed,
         samples: BLENDER_SAMPLES,
-        blenderPath,
+        containerRuntimePath,
         run,
         signal,
         capability,

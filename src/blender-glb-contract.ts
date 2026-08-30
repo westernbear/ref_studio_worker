@@ -164,7 +164,11 @@ export const parseGlbContract = (
     )
   )
     throw new GlbContractError("GLB_CONTRACT_REJECTED", "local-texture-path");
-  if (bytes.byteLength > budget.maxBytes)
+  const totalBytes = [...localTextures.values()].reduce(
+    (sum, texture) => sum + texture.byteLength,
+    bytes.byteLength,
+  );
+  if (totalBytes > budget.maxBytes)
     throw new GlbContractError("GLB_RESOURCE_BUDGET_EXCEEDED", "bytes");
   const chunks = readChunks(bytes);
   let decoded: unknown;
@@ -204,9 +208,12 @@ export const parseGlbContract = (
     if (image.extras === undefined)
       throw new GlbContractError("GLB_CONTRACT_REJECTED", "texture-hash");
     let texture: Uint8Array;
+    let uriDigest: string | undefined;
     if (image.uri !== undefined) {
-      if (!/^assets\/[a-f0-9]{64}\.(?:png|jpe?g)$/u.test(image.uri))
+      const uri = /^assets\/([a-f0-9]{64})\.(?:png|jpe?g)$/u.exec(image.uri);
+      if (!uri)
         throw new GlbContractError("GLB_CONTRACT_REJECTED", "texture-uri");
+      uriDigest = uri[1];
       const local = localTextures.get(image.uri);
       if (!local)
         throw new GlbContractError("GLB_CONTRACT_REJECTED", "texture-missing");
@@ -229,7 +236,10 @@ export const parseGlbContract = (
       );
     }
     const digest = createHash("sha256").update(texture).digest("hex");
-    if (digest !== image.extras.rvsSha256)
+    if (
+      digest !== image.extras.rvsSha256 ||
+      (image.uri !== undefined && uriDigest !== digest)
+    )
       throw new GlbContractError("GLB_CONTRACT_REJECTED", "texture-hash");
     const dimensions = embeddedTextureDimensions(texture);
     if (

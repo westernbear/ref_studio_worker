@@ -122,6 +122,34 @@ describe("parseGlbContract", () => {
     expect(() =>
       parseGlbContract(local, BLENDER_3D_BUDGET, new Map([[uri, png(1, 1)]])),
     ).toThrow(/GLB_CONTRACT_REJECTED:texture-hash/u);
+    const wrongUri = `assets/${"0".repeat(64)}.png`;
+    expect(() =>
+      parseGlbContract(
+        glb({
+          asset: { version: "2.0" },
+          images: [{ uri: wrongUri, extras: { rvsSha256: sha256 } }],
+        }),
+        BLENDER_3D_BUDGET,
+        new Map([[wrongUri, texture]]),
+      ),
+    ).toThrow(/GLB_CONTRACT_REJECTED:texture-hash/u);
+  });
+
+  it("counts local texture bytes in the total GLB budget", () => {
+    const texture = png(32, 16);
+    const sha256 = createHash("sha256").update(texture).digest("hex");
+    const uri = `assets/${sha256}.png`;
+    const document = glb({
+      asset: { version: "2.0" },
+      images: [{ uri, extras: { rvsSha256: sha256 } }],
+    });
+    expect(() =>
+      parseGlbContract(
+        document,
+        { ...BLENDER_3D_BUDGET, maxBytes: document.byteLength },
+        new Map([[uri, texture]]),
+      ),
+    ).toThrow(/GLB_RESOURCE_BUDGET_EXCEEDED:bytes/u);
   });
 
   it("rejects over-budget texture dimensions", () => {

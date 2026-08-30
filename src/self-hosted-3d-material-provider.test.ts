@@ -1,9 +1,11 @@
 import { createHash } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
+import { basename, join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   BLENDER_SAMPLES,
   buildBlenderScript,
+  canonicalizeBlenderPng,
   createSelfHosted3DMaterialProvider,
   HI3DGEN_BLENDER_TOOL,
   type Hi3DGenClient,
@@ -83,13 +85,20 @@ const fakeBlender =
   (
     png: Uint8Array | ((argsPath: string) => Promise<Uint8Array>),
   ): CommandRunner =>
-  async (command, args) => {
-    const argsPath = args.at(-1) as string;
-    const cfg = JSON.parse(await readFile(argsPath, "utf8")) as {
+  async (command, args, options) => {
+    const argsPath = args.at(-1);
+    if (argsPath === undefined) throw new Error("MISSING_BLENDER_ARGS_PATH");
+    const localArgsPath = argsPath.startsWith("/workspace/")
+      ? join(options.cwd, basename(argsPath))
+      : argsPath;
+    const cfg = JSON.parse(await readFile(localArgsPath, "utf8")) as {
       outputPath: string;
     };
-    const bytes = typeof png === "function" ? await png(argsPath) : png;
-    await writeFile(cfg.outputPath, bytes);
+    const bytes = typeof png === "function" ? await png(localArgsPath) : png;
+    const localOutputPath = cfg.outputPath.startsWith("/workspace/")
+      ? join(options.cwd, basename(cfg.outputPath))
+      : cfg.outputPath;
+    await writeFile(localOutputPath, bytes);
     return { stdout: "", stderr: "" };
   };
 
@@ -296,7 +305,7 @@ describe("renderGlbWithBlender", () => {
       height: request.canvas.height,
       seed: 7,
       samples: BLENDER_SAMPLES,
-      blenderPath: "blender",
+      containerRuntimePath: "docker",
       run,
       signal,
       capability,
@@ -320,7 +329,7 @@ describe("renderGlbWithBlender", () => {
         height: request.canvas.height,
         seed: 7,
         samples: BLENDER_SAMPLES,
-        blenderPath: "blender",
+        containerRuntimePath: "docker",
         run: async (_command, _args, options) => {
           if (options.signal.aborted) throw new Error("WORKER_JOB_CANCELLED");
           throw new Error("MUST_NOT_RENDER");
@@ -329,5 +338,22 @@ describe("renderGlbWithBlender", () => {
         capability,
       }),
     ).rejects.toThrow(/WORKER_JOB_CANCELLED/u);
+  });
+});
+
+describe("canonicalizeBlenderPng", () => {
+  it("removes Blender timestamp metadata while preserving critical chunks", () => {
+    const critical = buildFakePng(2, 2);
+    const text = Buffer.from("rendered-at=now");
+    const ancillary = Buffer.alloc(12 + text.length);
+    ancillary.writeUInt32BE(text.length, 0);
+    ancillary.write("tEXt", 4, "ascii");
+    text.copy(ancillary, 8);
+    const withMetadata = Buffer.concat([
+      critical.subarray(0, 8),
+      ancillary,
+      critical.subarray(8),
+    ]);
+    expect(canonicalizeBlenderPng(withMetadata)).toEqual(critical);
   });
 });

@@ -5,13 +5,13 @@ import {
 } from "./blender-glb-contract.js";
 
 export const REGISTERED_BLENDER = {
-  image: "docker.io/blender:4.3.3",
+  image: "lscr.io/linuxserver/blender",
   imageDigest:
-    "sha256:2ddf36d74847e243fc07e06979e5fb1d8c2d2bc39d23b7a883ccc106f35d8a63",
-  version: "4.3.3",
+    "sha256:d1d01373e76c2dc678cb20dd38af4416daaa6ae583fa2458faa54e4f10d0c1b2",
+  version: "5.2.1",
   device: "CPU",
   fixtureSha256:
-    "1d4725fdc2555df8f53735af6b28787f30423a2429b31d17a090ec4fe83bd72a",
+    "cbc57b7c9e48b413bf2f0aabed5849117c70550f8a94783f21cbe6e147da407e",
   budget: BLENDER_3D_BUDGET,
 } as const;
 
