@@ -90,12 +90,11 @@ const GlbJsonSchema = z
   })
   .passthrough();
 
-const ALLOWED_EXTENSIONS = new Set([
-  "KHR_materials_unlit",
-  "KHR_materials_transmission",
-  "KHR_materials_ior",
-  "KHR_texture_transform",
-]);
+const ALLOWED_EXTENSIONS = new Set(
+  "KHR_materials_unlit KHR_materials_transmission KHR_materials_ior KHR_texture_transform".split(
+    " ",
+  ),
+);
 
 type GlbChunks = Readonly<{ json: Uint8Array; binary: Uint8Array }>;
 
