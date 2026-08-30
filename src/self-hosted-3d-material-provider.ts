@@ -1,7 +1,12 @@
 import { createHash } from "node:crypto";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import {
+  parseBlenderCapability,
+  type BlenderCapabilitySnapshot,
+} from "./blender-capability.js";
+import { parseGlbContract } from "./blender-glb-contract.js";
 import { deriveMaterialSeed } from "./material-seed.js";
 import {
   MaterialGenerationError,
@@ -98,8 +103,8 @@ export type SelfHosted3DMaterialProviderConfig = Readonly<{
   // Undefined means "not configured" -- generate() then refuses by name,
   // the same fail-closed stance unavailableMaterialProvider takes.
   baseUrl: string | undefined;
+  capability?: BlenderCapabilitySnapshot;
   blenderPath?: string;
-  samples?: number;
   runCommand?: CommandRunner;
   client?: Hi3DGenClient;
 }>;
@@ -201,7 +206,14 @@ function readPngIhdr(
 // channel `film_transparent` asked Blender for.
 const ALPHA_COLOR_TYPES = new Set([4, 6]);
 
-async function renderMeshWithBlender(
+export type BlenderRenderResult = Readonly<{
+  kind: "still";
+  frames: readonly Uint8Array[];
+  glbSha256: string;
+  frameSha256: readonly string[];
+}>;
+
+export async function renderGlbWithBlender(
   meshBytes: Uint8Array,
   options: Readonly<{
     width: number;
@@ -211,8 +223,16 @@ async function renderMeshWithBlender(
     blenderPath: string;
     run: CommandRunner;
     signal: AbortSignal;
+    capability: BlenderCapabilitySnapshot;
+    localTextures?: ReadonlyMap<string, Uint8Array>;
   }>,
-): Promise<Uint8Array> {
+): Promise<BlenderRenderResult> {
+  const localTextures = options.localTextures ?? new Map();
+  const contract = parseGlbContract(
+    meshBytes,
+    options.capability.budget,
+    localTextures,
+  );
   const workspace = await mkdtemp(join(tmpdir(), "rvs-hi3dgen-"));
   try {
     const meshPath = join(workspace, "mesh.glb");
@@ -220,6 +240,14 @@ async function renderMeshWithBlender(
     const argsPath = join(workspace, "args.json");
     const outputPath = join(workspace, "render.png");
     await writeFile(meshPath, meshBytes);
+    if (localTextures.size > 0) {
+      await mkdir(join(workspace, "assets"));
+      await Promise.all(
+        [...localTextures].map(([path, bytes]) =>
+          writeFile(join(workspace, path), bytes),
+        ),
+      );
+    }
     await writeFile(scriptPath, buildBlenderScript(), "utf8");
     await writeFile(
       argsPath,
@@ -238,12 +266,15 @@ async function renderMeshWithBlender(
       [
         "--background",
         "--factory-startup",
+        "--disable-autoexec",
+        "--python-exit-code",
+        "1",
         "--python",
         scriptPath,
         "--",
         argsPath,
       ],
-      { cwd: workspace, signal: options.signal },
+      { cwd: workspace, signal: options.signal, timeoutMs: 300_000 },
     );
     const png = await readFile(outputPath);
     const ihdr = readPngIhdr(png);
@@ -254,7 +285,13 @@ async function renderMeshWithBlender(
       !ALPHA_COLOR_TYPES.has(ihdr.colorType)
     )
       throw new Error("HI3DGEN_RENDER_QC_FAILED");
-    return png;
+    const frameSha256 = createHash("sha256").update(png).digest("hex");
+    return {
+      kind: "still",
+      frames: [png],
+      glbSha256: contract.sha256,
+      frameSha256: [frameSha256],
+    };
   } finally {
     await rm(workspace, { recursive: true, force: true });
   }
@@ -265,7 +302,6 @@ export function createSelfHosted3DMaterialProvider(
 ): MaterialProvider {
   const baseUrl = config.baseUrl;
   const blenderPath = config.blenderPath ?? "blender";
-  const samples = config.samples ?? BLENDER_SAMPLES;
   const client = config.client ?? defaultHi3DGenClient;
   const run = config.runCommand ?? runCommand;
   return {
@@ -277,6 +313,7 @@ export function createSelfHosted3DMaterialProvider(
           request.assetId,
           "RVS_HI3DGEN_BASE_URL is not configured for this deployment",
         );
+      const capability = parseBlenderCapability(config.capability);
       const seed =
         request.seed ?? deriveMaterialSeed(request.assetId, request.prompt);
       const mesh = await client(
@@ -284,15 +321,18 @@ export function createSelfHosted3DMaterialProvider(
         { prompt: request.prompt, seed },
         signal,
       );
-      const png = await renderMeshWithBlender(mesh, {
+      const render = await renderGlbWithBlender(mesh, {
         width: request.canvas.width,
         height: request.canvas.height,
         seed,
-        samples,
+        samples: BLENDER_SAMPLES,
         blenderPath,
         run,
         signal,
+        capability,
       });
+      const png = render.frames[0];
+      if (png === undefined) throw new Error("HI3DGEN_RENDER_QC_FAILED");
       const sha256 = createHash("sha256").update(png).digest("hex");
       return {
         bytes: png,

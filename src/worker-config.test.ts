@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { parseWorkerConfig } from "./worker-config.js";
+import { REGISTERED_BLENDER } from "./blender-capability.js";
 
 describe("worker config", () => {
   it("parses required values and safe interval defaults", () => {
@@ -58,5 +59,31 @@ describe("worker config", () => {
         RVS_WAN_ALPHA_BASE_URL: "not-a-url",
       }),
     ).toThrow();
+  });
+  it("parses only a pinned Blender capability snapshot", () => {
+    const capability = {
+      imageDigest: REGISTERED_BLENDER.imageDigest,
+      version: REGISTERED_BLENDER.version,
+      device: REGISTERED_BLENDER.device,
+      fixtureSha256: REGISTERED_BLENDER.fixtureSha256,
+      fixturePassed: true,
+      budget: REGISTERED_BLENDER.budget,
+    } as const;
+    const config = parseWorkerConfig({
+      RVS_API_BASE_URL: "https://api.example.test",
+      RVS_WORKER_TOKEN: "secret",
+      RVS_BLENDER_CAPABILITY_JSON: JSON.stringify(capability),
+    });
+    expect(config.blenderCapability).toEqual(capability);
+    expect(() =>
+      parseWorkerConfig({
+        RVS_API_BASE_URL: "https://api.example.test",
+        RVS_WORKER_TOKEN: "secret",
+        RVS_BLENDER_CAPABILITY_JSON: JSON.stringify({
+          ...capability,
+          device: "CUDA",
+        }),
+      }),
+    ).toThrow(/BLENDER_CAPABILITY_UNAVAILABLE/u);
   });
 });

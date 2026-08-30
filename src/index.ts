@@ -50,6 +50,9 @@ export const createWorkerRuntime = (
             "object",
             createSelfHosted3DMaterialProvider({
               baseUrl: endpoints.model3d ?? config.hi3dgenBaseUrl,
+              ...(config.blenderCapability !== undefined
+                ? { capability: config.blenderCapability }
+                : {}),
             }),
             createRemoteImageMaterialProvider(api, jobId),
           ),

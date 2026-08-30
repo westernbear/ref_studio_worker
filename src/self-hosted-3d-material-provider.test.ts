@@ -7,10 +7,12 @@ import {
   createSelfHosted3DMaterialProvider,
   HI3DGEN_BLENDER_TOOL,
   type Hi3DGenClient,
+  renderGlbWithBlender,
 } from "./self-hosted-3d-material-provider.js";
 import { deriveMaterialSeed } from "./material-seed.js";
 import { produceMaterial, type MaterialRequest } from "./material-provider.js";
 import type { CommandRunner } from "./process-runner.js";
+import { REGISTERED_BLENDER } from "./blender-capability.js";
 
 const request: MaterialRequest = {
   assetId: "hero-object",
@@ -22,6 +24,33 @@ const request: MaterialRequest = {
   canvas: { width: 96, height: 64, fps: 30, frameCount: 90 },
 };
 const signal = new AbortController().signal;
+const capability = {
+  imageDigest: REGISTERED_BLENDER.imageDigest,
+  version: REGISTERED_BLENDER.version,
+  device: REGISTERED_BLENDER.device,
+  fixtureSha256: REGISTERED_BLENDER.fixtureSha256,
+  fixturePassed: true,
+  budget: REGISTERED_BLENDER.budget,
+} as const;
+
+const buildGlb = (): Uint8Array => {
+  const encoded = Buffer.from(
+    JSON.stringify({
+      asset: { version: "2.0" },
+      accessors: [{ count: 3 }],
+      meshes: [{ primitives: [{ attributes: { POSITION: 0 } }] }],
+    }),
+  );
+  const paddedLength = Math.ceil(encoded.length / 4) * 4;
+  const bytes = Buffer.alloc(20 + paddedLength, 0x20);
+  bytes.write("glTF", 0, "ascii");
+  bytes.writeUInt32LE(2, 4);
+  bytes.writeUInt32LE(bytes.length, 8);
+  bytes.writeUInt32LE(paddedLength, 12);
+  bytes.writeUInt32LE(0x4e4f534a, 16);
+  encoded.copy(bytes, 20);
+  return bytes;
+};
 
 const PNG_SIGNATURE = [137, 80, 78, 71, 13, 10, 26, 10];
 const buildFakePng = (
@@ -99,11 +128,26 @@ describe("createSelfHosted3DMaterialProvider", () => {
     );
   });
 
+  it("fails closed before mesh generation when the Blender capability is absent", async () => {
+    let generated = false;
+    const provider = createSelfHosted3DMaterialProvider({
+      baseUrl: "http://hi3dgen.worker-internal:8000",
+      client: async () => {
+        generated = true;
+        return buildGlb();
+      },
+    });
+    await expect(produceMaterial(provider, request, signal)).rejects.toThrow(
+      /BLENDER_CAPABILITY_UNAVAILABLE/u,
+    );
+    expect(generated).toBe(false);
+  });
+
   it("derives a seed, renders at the scene's canvas size and returns image/png provenance", async () => {
     const clientCalls: Array<{ prompt: string; seed: number }> = [];
     const client: Hi3DGenClient = async (baseUrl, req) => {
       clientCalls.push(req);
-      return Uint8Array.from([1, 2, 3]);
+      return buildGlb();
     };
     let sawSeed: number | undefined;
     const run = fakeBlender(async (argsPath) => {
@@ -117,6 +161,7 @@ describe("createSelfHosted3DMaterialProvider", () => {
     });
     const provider = createSelfHosted3DMaterialProvider({
       baseUrl: "http://hi3dgen.worker-internal:8000",
+      capability,
       client,
       runCommand: run,
     });
@@ -135,7 +180,7 @@ describe("createSelfHosted3DMaterialProvider", () => {
   });
 
   it("uses the scene's own seed instead of deriving one when the scene names one", async () => {
-    const client: Hi3DGenClient = async () => Uint8Array.from([1]);
+    const client: Hi3DGenClient = async () => buildGlb();
     let sawSeed: number | undefined;
     const run = fakeBlender(async (argsPath) => {
       const cfg = JSON.parse(await readFile(argsPath, "utf8")) as {
@@ -148,6 +193,7 @@ describe("createSelfHosted3DMaterialProvider", () => {
     });
     const provider = createSelfHosted3DMaterialProvider({
       baseUrl: "http://hi3dgen.worker-internal:8000",
+      capability,
       client,
       runCommand: run,
     });
@@ -163,7 +209,7 @@ describe("createSelfHosted3DMaterialProvider", () => {
   });
 
   it("uses the configured sample count, defaulting to BLENDER_SAMPLES", async () => {
-    const client: Hi3DGenClient = async () => Uint8Array.from([1]);
+    const client: Hi3DGenClient = async () => buildGlb();
     let sawSamples: number | undefined;
     const run = fakeBlender(async (argsPath) => {
       const cfg = JSON.parse(await readFile(argsPath, "utf8")) as {
@@ -176,6 +222,7 @@ describe("createSelfHosted3DMaterialProvider", () => {
     });
     const provider = createSelfHosted3DMaterialProvider({
       baseUrl: "http://hi3dgen.worker-internal:8000",
+      capability,
       client,
       runCommand: run,
     });
@@ -186,10 +233,11 @@ describe("createSelfHosted3DMaterialProvider", () => {
   });
 
   it("rejects a render whose dimensions don't match the scene's canvas", async () => {
-    const client: Hi3DGenClient = async () => Uint8Array.from([1]);
+    const client: Hi3DGenClient = async () => buildGlb();
     const run = fakeBlender(buildFakePng(1, 1));
     const provider = createSelfHosted3DMaterialProvider({
       baseUrl: "http://hi3dgen.worker-internal:8000",
+      capability,
       client,
       runCommand: run,
     });
@@ -200,13 +248,14 @@ describe("createSelfHosted3DMaterialProvider", () => {
   });
 
   it("rejects a render with no alpha channel", async () => {
-    const client: Hi3DGenClient = async () => Uint8Array.from([1]);
+    const client: Hi3DGenClient = async () => buildGlb();
     // colorType 2 = truecolour, no alpha.
     const run = fakeBlender(
       buildFakePng(request.canvas.width, request.canvas.height, 2),
     );
     const provider = createSelfHosted3DMaterialProvider({
       baseUrl: "http://hi3dgen.worker-internal:8000",
+      capability,
       client,
       runCommand: run,
     });
@@ -222,11 +271,63 @@ describe("createSelfHosted3DMaterialProvider", () => {
     };
     const provider = createSelfHosted3DMaterialProvider({
       baseUrl: "http://hi3dgen.worker-internal:8000",
+      capability,
       client,
     });
 
     await expect(produceMaterial(provider, request, signal)).rejects.toThrow(
       /HI3DGEN_REQUEST_FAILED/u,
     );
+  });
+});
+
+describe("renderGlbWithBlender", () => {
+  it("returns the same verified still hash twice", async () => {
+    const commands: string[][] = [];
+    const render = fakeBlender(
+      buildFakePng(request.canvas.width, request.canvas.height),
+    );
+    const run: CommandRunner = async (command, args, options) => {
+      commands.push([...args]);
+      return render(command, args, options);
+    };
+    const options = {
+      width: request.canvas.width,
+      height: request.canvas.height,
+      seed: 7,
+      samples: BLENDER_SAMPLES,
+      blenderPath: "blender",
+      run,
+      signal,
+      capability,
+    } as const;
+    const first = await renderGlbWithBlender(buildGlb(), options);
+    const second = await renderGlbWithBlender(buildGlb(), options);
+    expect(first).toEqual(second);
+    expect(first.kind).toBe("still");
+    expect(first.frames).toHaveLength(1);
+    expect(commands.every((args) => args.includes("--disable-autoexec"))).toBe(
+      true,
+    );
+  });
+
+  it("publishes no frame when cancellation wins", async () => {
+    const controller = new AbortController();
+    controller.abort(new Error("cancelled"));
+    await expect(
+      renderGlbWithBlender(buildGlb(), {
+        width: request.canvas.width,
+        height: request.canvas.height,
+        seed: 7,
+        samples: BLENDER_SAMPLES,
+        blenderPath: "blender",
+        run: async (_command, _args, options) => {
+          if (options.signal.aborted) throw new Error("WORKER_JOB_CANCELLED");
+          throw new Error("MUST_NOT_RENDER");
+        },
+        signal: controller.signal,
+        capability,
+      }),
+    ).rejects.toThrow(/WORKER_JOB_CANCELLED/u);
   });
 });
