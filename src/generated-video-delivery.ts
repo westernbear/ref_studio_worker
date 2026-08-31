@@ -1,7 +1,11 @@
+import { stat } from "node:fs/promises";
 import { z } from "zod";
 import type { SceneSpec } from "./contracts/index.js";
 import type { CommandRunner } from "./process-runner.js";
 import type { ValidatedAudio } from "./audio-decoder.js";
+
+// Keep in lockstep with packages/contracts RESOURCE_BUDGETS.maxFfmpegOutputBytes.
+const MAX_FFMPEG_OUTPUT_BYTES = 2 * 1024 * 1024 * 1024;
 
 const Probe = z.object({
   format: z.object({ duration: z.string() }),
@@ -190,6 +194,13 @@ export async function assembleGeneratedVideo(
     ],
     { cwd: input.workspace, signal: input.signal },
   );
+  try {
+    const muxed = await stat(input.outputPath);
+    if (muxed.size > MAX_FFMPEG_OUTPUT_BYTES)
+      throw new Error("RESOURCE_BUDGET_EXCEEDED");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
   const metadata = await run(
     process.env.RVS_FFPROBE_PATH ?? "ffprobe",
     [
