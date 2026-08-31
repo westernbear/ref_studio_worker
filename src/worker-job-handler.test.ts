@@ -348,6 +348,35 @@ describe("workflow job handler", () => {
     expect(result.report).not.toHaveProperty("safetySampleFramePath");
   });
 
+  it("strips runtimeSnapshotDigest from the preview report runtime", async () => {
+    const fixture = dependencies();
+    const renderDelivery: WorkflowPipelineDependencies["renderDelivery"] =
+      vi.fn(async ({ outputPath, mode }) => {
+        await writeFile(outputPath, "rendered-mp4");
+        return {
+          status: "PASS",
+          mode,
+          safetySampleFramePath: null,
+          runtime: {
+            chromiumVersion: "151.0.7922.138",
+            renderer: "ANGLE SwiftShader",
+            runtimeSnapshotDigest: "a".repeat(64),
+          },
+        };
+      });
+    const handler = createWorkflowJobHandler({
+      ...fixture.dependencies,
+      renderDelivery,
+    });
+
+    const result = (await handler(
+      job("preview"),
+      new AbortController().signal,
+    )) as { report: { runtime: Record<string, unknown> } };
+    expect(result.report.runtime).not.toHaveProperty("runtimeSnapshotDigest");
+    expect(result.report.runtime.renderer).toBe("ANGLE SwiftShader");
+  });
+
   it("renders the approved IR into the private delivery slot", async () => {
     const fixture = dependencies();
     const handler = createWorkflowJobHandler(fixture.dependencies);

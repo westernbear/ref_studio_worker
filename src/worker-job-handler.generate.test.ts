@@ -180,6 +180,7 @@ const generatedReport = (outPath: string) => ({
     webgl2: true,
     networkPolicy: "external-blocked",
     repeatedFrameByteIdentity: true,
+    runtimeSnapshotDigest: "a".repeat(64),
   },
   qc: { status: "PASS" },
   safetySampleFramePath: `${outPath}.sample.png`,
@@ -585,6 +586,9 @@ describe("the gen-render worker phase", () => {
     });
     expect(result["report"]).not.toHaveProperty("safetySampleFramePath");
     expect(result["report"]).not.toHaveProperty("scenePackageArchivePath");
+    expect(
+      (result["report"] as { runtime: Record<string, unknown> }).runtime,
+    ).not.toHaveProperty("runtimeSnapshotDigest");
     expect(renderGenerated).toHaveBeenCalledWith(
       expect.objectContaining({
         renderCachePath: expect.stringMatching(

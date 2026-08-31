@@ -475,6 +475,10 @@ export const createWorkflowJobHandler = (
             report.safetySampleFramePath,
             generatedSignal,
           );
+          const {
+            runtimeSnapshotDigest: _runtimeSnapshotDigest,
+            ...outgoingRuntime
+          } = report.runtime;
           return {
             protocol: "rvs.worker.v1",
             phase: "gen-render",
@@ -489,7 +493,7 @@ export const createWorkflowJobHandler = (
               outputSha256: report.outputSha256,
               outputBytes: report.outputBytes,
               frameSha256: report.frameSha256,
-              runtime: report.runtime,
+              runtime: outgoingRuntime,
               qc: report.qc,
             },
           };
@@ -685,13 +689,23 @@ export const createWorkflowJobHandler = (
           }),
         );
         // safetySampleFramePath is a local worker-filesystem path, meaningful
-        // only for the upload below -- strip it before the report is sent to
-        // the API, whose RenderReport schema is .strict() (both preview and
-        // delivery reports extend it, so both must drop this key).
+        // only for the upload below. runtimeSnapshotDigest is already bound
+        // at register; the API RenderReport schema is .strict() without it
+        // (same class of extra field as register's RuntimePreflight).
         const { safetySampleFramePath, ...outgoingReport } = report as Record<
           string,
           unknown
-        > & { safetySampleFramePath?: unknown };
+        > & { safetySampleFramePath?: unknown; runtime?: unknown };
+        if (
+          outgoingReport.runtime &&
+          typeof outgoingReport.runtime === "object"
+        ) {
+          const { runtimeSnapshotDigest: _runtimeSnapshotDigest, ...runtime } =
+            outgoingReport.runtime as Record<string, unknown> & {
+              runtimeSnapshotDigest?: unknown;
+            };
+          outgoingReport.runtime = runtime;
+        }
         if (mode === "preview") {
           // The animatic ships in two forms: a clean one for judging the
           // motion, and one captioned with the treatments it applies, which
