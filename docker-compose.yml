@@ -55,6 +55,19 @@ x-generator-common: &generator-common
     start_period: 600s
 
 services:
+  # Worker images extend reference-video-studio-runtime:1.0.0 from the repo
+  # root Dockerfile. That tag is local-only (not on Docker Hub); this
+  # one-shot service builds it before api-relay/worker and exits.
+  runtime-base:
+    image: reference-video-studio-runtime:1.0.0
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      target: runtime
+      provenance: false
+    entrypoint: ["true"]
+    network_mode: none
+    restart: "no"
   api-relay:
     image: reference-video-studio-worker:1.0.0
     restart: always
@@ -62,6 +75,9 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    depends_on:
+      runtime-base:
+        condition: service_completed_successfully
     extra_hosts:
       - "host.docker.internal:host-gateway"
     env_file: *worker-env-files
@@ -97,6 +113,8 @@ services:
       dockerfile: Dockerfile
     env_file: *worker-env-files
     depends_on:
+      runtime-base:
+        condition: service_completed_successfully
       api-relay:
         condition: service_healthy
     environment:
@@ -172,6 +190,9 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    depends_on:
+      runtime-base:
+        condition: service_completed_successfully
     network_mode: none
     environment:
       CI: "true"

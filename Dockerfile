@@ -47,7 +47,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     COREPACK_ENABLE_PROJECT_SPEC=0 \
     PNPM_MANAGE_PACKAGE_MANAGER_VERSIONS=false \
     PNPM_CONFIG_FROZEN_LOCKFILE=true \
-    PATH=/opt/compiler-venv/bin:/opt/rvs/bin:/usr/local/bin:$PATH \
+    PATH=/opt/compiler-venv/bin:/opt/uv:/opt/rvs/bin:/usr/local/bin:$PATH \
     LD_LIBRARY_PATH=/opt/rvs/lib \
     PYTHONPATH=/app \
     CHROME_PATH=/opt/chrome/chrome \
@@ -70,11 +70,6 @@ COPY --from=python-runtime /usr/local/ /usr/local/
 COPY --from=assets /opt/rvs/model-artifacts/ /opt/rvs/model-artifacts/
 COPY --from=assets /opt/rvs/models/ /opt/rvs/models/
 COPY --from=assets /opt/rvs/vendor/ /opt/rvs/vendor/
-RUN curl -fsSLo /tmp/uv.tar.gz https://github.com/astral-sh/uv/releases/download/0.11.8/uv-x86_64-unknown-linux-gnu.tar.gz && \
-    echo "56dd1b66701ecb62fe896abb919444e4b83c5e8645cca953e6ddd496ff8a0feb  /tmp/uv.tar.gz" | sha256sum -c - && \
-    tar -xzf /tmp/uv.tar.gz -C /tmp && \
-    install /tmp/uv-x86_64-unknown-linux-gnu/uv /usr/local/bin/uv
-
 WORKDIR /app
 COPY compiler/pyproject.toml compiler/uv.lock ./compiler/
 RUN uv sync --project compiler --frozen --no-dev --no-install-project
