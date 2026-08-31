@@ -17,3 +17,13 @@ export const escapeDrawtext = (value: string): string =>
     // A literal apostrophe cannot survive inside the single-quoted option, so
     // hand drawtext the codepoint instead and let it render the character.
     .replaceAll("'", "\\u0027");
+
+export const drawtextFontfile = (
+  fontPath = process.env.RVS_FONT_PATH ?? "/opt/rvs/fonts/WantedSansVariable.ttf",
+): string => {
+  const escaped = fontPath
+    .replaceAll("\\", "\\\\")
+    .replaceAll(":", "\\:")
+    .replaceAll("'", "\\u0027");
+  return `fontfile='${escaped}'`;
+};

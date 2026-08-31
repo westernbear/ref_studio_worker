@@ -15,6 +15,7 @@ describe("buildVfxLabelFilter", () => {
   it("stamps the frame number without a clause per frame", () => {
     const filter = buildVfxLabelFilter([]);
     expect(filter).toContain("F%{frame_num}");
+    expect(filter).toContain("fontfile='/opt/rvs/fonts/WantedSansVariable.ttf'");
     expect(filter.split("drawtext").length - 1).toBe(1);
   });
 

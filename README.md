@@ -25,7 +25,9 @@ The image installs pinned FFmpeg 8.0.1 and FFprobe from `docker/rvs-media-tools-
 
 From the monorepo, `pnpm up:worker` in `apps/worker` wraps the same compose flow. `pnpm up:worker --no-gpu` leaves the GPU overlay out; `--host user@gpu-box` runs against a remote Docker daemon over SSH. Omit `RVS_WORKER_ID` to generate `worker-<hostname>` automatically. The default same-host API URL is `http://host.docker.internal:3200`.
 
-On a separate worker server, `RVS_API_BASE_URL` must be the API address reachable from that server, including the host port exposed by the API deployment. For example, use `http://192.168.123.100:13001` when that address serves `/v1/workers/register`; do not use the web UI URL. `RVS_WORKER_TOKEN` must exactly match the API server's value. `RVS_API_REQUEST_TIMEOUT_MS` covers ordinary JSON calls, while `RVS_MEDIA_REQUEST_TIMEOUT_MS` covers source downloads and artifact uploads and defaults to 30 minutes.
+When the worker Compose stack runs on the **same machine** as the API, keep `RVS_API_BASE_URL=http://host.docker.internal:3200`. The relay already maps that name to the host gateway. Do not point it at the host's LAN address (for example `http://192.168.123.100:3200`) from inside Docker — that hairpin is what produces `connect ECONNREFUSED …:3200` and then `502 upstream unavailable` on `/v1/workers/register`.
+
+On a **different** worker server, set `RVS_API_BASE_URL` to an address that server can reach, including the published API port, and confirm with `curl "$RVS_API_BASE_URL/health"` on that server before Compose. Do not use the web UI URL. `RVS_WORKER_TOKEN` must exactly match the API server's value. `RVS_API_REQUEST_TIMEOUT_MS` covers ordinary JSON calls, while `RVS_MEDIA_REQUEST_TIMEOUT_MS` covers source downloads and artifact uploads and defaults to 30 minutes.
 
 Run the no-network runtime verification with `docker compose run --rm worker-smoke`. It checks the pinned Chrome executable, FFmpeg, compiler unit boundary, model hashes, and offline model loading without starting the worker daemon.
 

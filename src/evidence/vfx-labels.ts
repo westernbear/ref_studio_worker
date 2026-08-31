@@ -1,7 +1,7 @@
 import { join } from "node:path";
 import { writeFile } from "node:fs/promises";
 import { runCommand, type CommandRunner } from "../process-runner.js";
-import { escapeDrawtext } from "./drawtext.js";
+import { escapeDrawtext, drawtextFontfile } from "./drawtext.js";
 
 // The reviewer has to be able to tell which treatments the animatic is
 // actually applying, so each shader present in the scene gets a standing
@@ -25,12 +25,12 @@ export const buildVfxLabelFilter = (shaders: readonly string[]): string => {
   const present = LABEL_ORDER.filter((shader) => shaders.includes(shader));
   const clauses = present.map((shader, row) => {
     const text = escapeDrawtext(LABEL_BY_SHADER[shader] ?? shader);
-    return `drawtext=text='${text}':x=32:y=${32 + row * 44}:fontsize=26:fontcolor=white:box=1:boxcolor=black@0.55:boxborderw=10`;
+    return `drawtext=text='${text}':x=32:y=${32 + row * 44}:fontsize=26:fontcolor=white:${drawtextFontfile()}:box=1:boxcolor=black@0.55:boxborderw=10`;
   });
   // %{frame_num} is expanded by drawtext itself, so the running stamp costs
   // one clause rather than one per frame.
   clauses.push(
-    "drawtext=text='F%{frame_num}':x=32:y=h-58:fontsize=26:fontcolor=white:box=1:boxcolor=black@0.55:boxborderw=10",
+    `drawtext=text='F%{frame_num}':x=32:y=h-58:fontsize=26:fontcolor=white:${drawtextFontfile()}:box=1:boxcolor=black@0.55:boxborderw=10`,
   );
   return clauses.join(",");
 };

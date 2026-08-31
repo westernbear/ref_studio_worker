@@ -27,6 +27,7 @@ describe("buildEvidenceOverlayFilter", () => {
     expect(filter).toContain("drawbox=x=10:y=20:w=100:h=200:color=yellow@0.8");
     expect(filter).toContain("enable='eq(n\\,0)'");
     expect(filter).toContain("drawtext=text='foreground-subject'");
+    expect(filter).toContain("fontfile='/opt/rvs/fonts/WantedSansVariable.ttf'");
   });
 
   it("emits a small drawbox dot per trajectory point", () => {

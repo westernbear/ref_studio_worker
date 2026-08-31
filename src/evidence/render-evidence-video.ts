@@ -1,7 +1,7 @@
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { runCommand, type CommandRunner } from "../process-runner.js";
-import { escapeDrawtext } from "./drawtext.js";
+import { escapeDrawtext, drawtextFontfile } from "./drawtext.js";
 import type { EvidenceTrack } from "./tracks.js";
 
 const COLOR_BY_KIND: Readonly<Record<EvidenceTrack["kind"], string>> = {
@@ -187,7 +187,7 @@ const placedLabels = (
       placed.push({ x: label.x, top, width, height });
       const box = label.boxed ? "box=1:boxcolor=black@0.5:" : "";
       clauses.push(
-        `drawtext=text='${escapeDrawtext(label.text)}':x=${label.x}:y=${top}:fontsize=${label.size}:fontcolor=${label.color}:${box}${enableAtFrame(frame)}`,
+        `drawtext=text='${escapeDrawtext(label.text)}':x=${label.x}:y=${top}:fontsize=${label.size}:fontcolor=${label.color}:${drawtextFontfile()}:${box}${enableAtFrame(frame)}`,
       );
     }
   }
