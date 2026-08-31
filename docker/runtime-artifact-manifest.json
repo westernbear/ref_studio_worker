@@ -1,0 +1,22 @@
+{
+  "schemaVersion": "rvs-worker-media-tools-v1",
+  "bundle": {
+    "version": "1.0.0",
+    "localPath": "docker/rvs-media-tools-1.0.0.tar.gz",
+    "sha256": "990768ec681d9ec737a621f2516b2b71f4342b3815b15f300e334555f1376c26"
+  },
+  "artifacts": [
+    {
+      "name": "ffmpeg",
+      "version": "8.0.1",
+      "path": "/opt/rvs/bin/ffmpeg",
+      "sha256": "3194fc9e9febe3a85e491c38e176f524266b9cbb39f227a514229300f0181c4d"
+    },
+    {
+      "name": "ffprobe",
+      "version": "8.0.1",
+      "path": "/opt/rvs/bin/ffprobe",
+      "sha256": "d88f63fd3896acf8a2713cab45cae428635ac40cbaccc67a61eec02dd4a1c5bf"
+    }
+  ]
+}

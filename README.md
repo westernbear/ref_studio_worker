@@ -15,7 +15,15 @@ Before registration, the worker verifies the pinned Chromium, SwiftShader WebGL2
 
 Prepare jobs download the accepted source, normalize the exact four-second interval, compile all-frame evidence, render a separate review animatic, and upload it through `preview-artifact`. After current T4 approval, render jobs repeat the deterministic SceneIR capture and upload the final delivery through `artifact`; T5 publishes that staged delivery.
 
-Copy `.env.example` to `.env`, set `RVS_API_BASE_URL` and `RVS_WORKER_TOKEN`, then run `pnpm up:worker` from `apps/worker` -- it builds and starts the relay and the worker with the GPU overlay, waits for both, and prints one JSON line. `pnpm up:worker --no-gpu` leaves the overlay out; `--host user@gpu-box` runs the whole thing against a remote Docker daemon over SSH, with no registry in between. The root `docker compose` no longer carries the relay or the worker; it starts the web and API only. The worker compose also reads the repository root `.env` first, then `apps/worker/.env` if present. Omit `RVS_WORKER_ID` to generate `worker-<hostname>` automatically. The default same-host API URL is `http://host.docker.internal:3200`.
+This repository is **standalone**: clone it alone on a worker server, copy `.env.example` to `.env`, set `RVS_API_BASE_URL` and `RVS_WORKER_TOKEN`, then build and start:
+
+```sh
+docker compose up -d --build api-relay worker
+```
+
+The image installs pinned FFmpeg 8.0.1 and FFprobe from `docker/rvs-media-tools-1.0.0.tar.gz`, then fetches Chrome for Testing, compiler models, and the Node/Python toolchain. No parent `ref_studio` checkout, no ffmpeg source compile, and no `reference-video-studio-runtime` image is required.
+
+From the monorepo, `pnpm up:worker` in `apps/worker` wraps the same compose flow. `pnpm up:worker --no-gpu` leaves the GPU overlay out; `--host user@gpu-box` runs against a remote Docker daemon over SSH. Omit `RVS_WORKER_ID` to generate `worker-<hostname>` automatically. The default same-host API URL is `http://host.docker.internal:3200`.
 
 On a separate worker server, `RVS_API_BASE_URL` must be the API address reachable from that server, including the host port exposed by the API deployment. For example, use `http://192.168.123.100:13001` when that address serves `/v1/workers/register`; do not use the web UI URL. `RVS_WORKER_TOKEN` must exactly match the API server's value. `RVS_API_REQUEST_TIMEOUT_MS` covers ordinary JSON calls, while `RVS_MEDIA_REQUEST_TIMEOUT_MS` covers source downloads and artifact uploads and defaults to 30 minutes.
 

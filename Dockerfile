@@ -1,5 +1,34 @@
 FROM python@sha256:356b0d18f9385f4bdcc673af60e1e64c9d1504952e4ec36ee32044c722a6bc4e AS python-runtime
 
+# Standalone worker image: pinned ffmpeg 8.0.1 / ffprobe binaries from
+# docker/rvs-media-tools-1.0.0.tar.gz. No compile, no parent repo.
+FROM node@sha256:65932751ed4073ed02f5c04e494e4b2572a891b7dbea0568a863dc80341bf848 AS worker-runtime-base
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PATH=/opt/rvs/bin:/opt/uv:/usr/local/bin:$PATH \
+    CHROME_PATH=/opt/chrome/chrome \
+    EXPECTED_CHROMIUM_VERSION=151.0.7922.138
+RUN apt-get -o Acquire::Retries=5 update && \
+    apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
+      ca-certificates curl libasound2 libatk-bridge2.0-0 libatk1.0-0 libcups2 \
+      libdbus-1-3 libdrm2 libfreetype6 libgbm1 libglib2.0-0 libgtk-3-0 libharfbuzz0b \
+      libnspr4 libnss3 libpango-1.0-0 libx11-6 libxcb1 libxcomposite1 libxdamage1 \
+      libxext6 libxfixes3 libxkbcommon0 libxrandr2 && rm -rf /var/lib/apt/lists/*
+COPY --from=python-runtime /usr/local/ /usr/local/
+COPY docker/rvs-media-tools-1.0.0.tar.gz /tmp/rvs-media-tools.tar.gz
+RUN echo "990768ec681d9ec737a621f2516b2b71f4342b3815b15f300e334555f1376c26  /tmp/rvs-media-tools.tar.gz" | sha256sum -c - && \
+    tar -xzf /tmp/rvs-media-tools.tar.gz -C / && rm /tmp/rvs-media-tools.tar.gz && \
+    chmod +x /opt/rvs/bin/ffmpeg /opt/rvs/bin/ffprobe && \
+    echo "3194fc9e9febe3a85e491c38e176f524266b9cbb39f227a514229300f0181c4d  /opt/rvs/bin/ffmpeg" | sha256sum -c - && \
+    echo "d88f63fd3896acf8a2713cab45cae428635ac40cbaccc67a61eec02dd4a1c5bf  /opt/rvs/bin/ffprobe" | sha256sum -c - && \
+    curl -fsSLo /tmp/uv.tar.gz https://github.com/astral-sh/uv/releases/download/0.11.8/uv-x86_64-unknown-linux-gnu.tar.gz && \
+    echo "56dd1b66701ecb62fe896abb919444e4b83c5e8645cca953e6ddd496ff8a0feb  /tmp/uv.tar.gz" | sha256sum -c - && \
+    mkdir -p /opt/uv && tar -xzf /tmp/uv.tar.gz -C /tmp && \
+    cp /tmp/uv-x86_64-unknown-linux-gnu/uv /tmp/uv-x86_64-unknown-linux-gnu/uvx /opt/uv/ && \
+    rm -rf /tmp/uv.tar.gz /tmp/uv-x86_64-unknown-linux-gnu && \
+    ln -sf /opt/rvs/bin/ffmpeg /usr/bin/ffmpeg && \
+    ln -sf /opt/rvs/bin/ffprobe /usr/bin/ffprobe
+
 FROM node@sha256:65932751ed4073ed02f5c04e494e4b2572a891b7dbea0568a863dc80341bf848 AS assets
 
 RUN apt-get -o Acquire::Retries=5 -o Acquire::http::No-Cache=true -o Acquire::http::Pipeline-Depth=0 update && \
@@ -40,7 +69,7 @@ RUN mkdir -p /opt/rvs/model-artifacts /opt/rvs/models/easyocr /opt/rvs/vendor /o
     echo "e0734c1e29426d2a6213650383fec37051145fccaed8360c8fe30d75321d98ab  /tmp/wanted-sans.zip" | sha256sum -c - && \
     unzip -p /tmp/wanted-sans.zip variable/WantedSansVariable.ttf > /opt/rvs/fonts/WantedSansVariable.ttf
 
-FROM reference-video-studio-runtime:1.0.0 AS runtime
+FROM worker-runtime-base AS runtime
 
 ENV DEBIAN_FRONTEND=noninteractive \
     CI=true \
@@ -66,7 +95,8 @@ ENV DEBIAN_FRONTEND=noninteractive \
     MKL_NUM_THREADS=4 \
     UV_PROJECT_ENVIRONMENT=/opt/compiler-venv
 
-COPY --from=python-runtime /usr/local/ /usr/local/
+COPY --from=assets /opt/chrome/ /opt/chrome/
+COPY --from=assets /opt/rvs/fonts/ /opt/rvs/fonts/
 COPY --from=assets /opt/rvs/model-artifacts/ /opt/rvs/model-artifacts/
 COPY --from=assets /opt/rvs/models/ /opt/rvs/models/
 COPY --from=assets /opt/rvs/vendor/ /opt/rvs/vendor/
