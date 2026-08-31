@@ -12,6 +12,11 @@ import {
   terminateProcess,
 } from "../process-runner.js";
 import {
+  REGISTERED_RUNTIME,
+  REGISTERED_RUNTIME_DIGEST,
+  sha256,
+} from "../runtime-snapshot.js";
+import {
   createRenderPlan,
   SHADER_NAMES,
   shaderSources,
@@ -193,6 +198,7 @@ export type BrowserCaptureReport = Readonly<{
   webgl2: true;
   networkPolicy: "external-blocked";
   repeatedFrameByteIdentity: true;
+  runtimeSnapshotDigest: string;
   frameSha256: readonly string[];
   passIds: readonly string[];
   shaderDiagnostics: readonly ShaderDiagnostics[];
@@ -464,6 +470,15 @@ const stopBrowser = async (child: ChildProcess): Promise<void> => {
 export async function captureBrowserFrames(
   input: BrowserCaptureInput,
 ): Promise<BrowserCaptureReport> {
+  const [chromeBytes, fontBytes] = await Promise.all([
+    readFile(input.chromePath),
+    readFile(input.fontPath),
+  ]);
+  if (
+    sha256(chromeBytes) !== REGISTERED_RUNTIME.chrome.sha256 ||
+    sha256(fontBytes) !== REGISTERED_RUNTIME.font.sha256
+  )
+    throw new Error("RUNTIME_SNAPSHOT_MISMATCH");
   // "workflow" must supply a measured field per frame, exactly as before.
   // "preflight"/"generated" have none to give -- default to zeros so the
   // capture page's unconditional 432-value guard (window.renderFrame) is
@@ -600,7 +615,7 @@ export async function captureBrowserFrames(
         probe.frame !== frame.frame ||
         !probe.fontReady ||
         !probe.webgl2 ||
-        !probe.renderer.toLowerCase().includes("swiftshader")
+        probe.renderer !== REGISTERED_RUNTIME.renderer
       )
         throw new Error("CHROMIUM_PREFLIGHT_FAILED");
       const context: ContextProbe = {
@@ -665,6 +680,7 @@ export async function captureBrowserFrames(
       webgl2: true,
       networkPolicy: "external-blocked",
       repeatedFrameByteIdentity: true,
+      runtimeSnapshotDigest: REGISTERED_RUNTIME_DIGEST,
       frameSha256: hashes,
       passIds: passList.map((pass) => pass.passId),
       shaderDiagnostics,

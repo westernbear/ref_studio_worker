@@ -1,5 +1,7 @@
 # Worker daemon
 
+Motion developer docs: [`docs/MOTION.md`](../../docs/MOTION.md). Error index: [`docs/errors.md`](../../docs/errors.md).
+
 The default Compose service runs the long-lived daemon. It registers with the server, heartbeats, and claims work through:
 
 - `POST /v1/workers/register`

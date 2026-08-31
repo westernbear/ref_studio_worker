@@ -61,6 +61,7 @@ const KIND_CONTENT_TYPES: Readonly<
 > = {
   image: ["image/png", "image/jpeg", "image/svg+xml"],
   video: ["video/mp4"],
+  audio: ["video/mp4"],
   font: ["font/otf", "font/ttf", "font/woff2"],
 };
 

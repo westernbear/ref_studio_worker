@@ -63,7 +63,7 @@ describe("CDP cancellation", () => {
           onFrame: async () => undefined,
           renderContract: { kind: "preflight" },
         }),
-      ).rejects.toThrow("CHROMIUM_START_FAILED");
+      ).rejects.toThrow("ENOENT");
     } finally {
       await rm(workspace, { recursive: true, force: true });
     }

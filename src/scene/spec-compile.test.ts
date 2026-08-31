@@ -1,4 +1,9 @@
-import { fixtureSpec, sha256Hex, type SceneSpec } from "../contracts/index.js";
+import {
+  fixtureSpec,
+  SceneSpecSchema,
+  sha256Hex,
+  type SceneSpec,
+} from "../contracts/index.js";
 import { describe, expect, it } from "vitest";
 import { compileSceneSpec } from "./spec-compile.js";
 
@@ -49,6 +54,12 @@ describe("compileSceneSpec", () => {
     );
   });
 
+  it("preserves the legacy v1 fixture digest", () => {
+    expect(compileSceneSpec(fixtureSpec).digest).toBe(
+      "ad1769cdede4de63582859084d355f8751a51d12c2e073d13a0e9c536250dbc9",
+    );
+  });
+
   it("expands one plan per frame", () => {
     expect(compileSceneSpec(fixtureSpec).frames).toHaveLength(
       fixtureSpec.canvas.frameCount,
@@ -94,5 +105,51 @@ describe("compileSceneSpec", () => {
     expect(compileSceneSpec(moved).digest).not.toBe(
       compileSceneSpec(fixtureSpec).digest,
     );
+  });
+
+  it("composes v2 parents in deterministic topological order", () => {
+    const spec = structuredClone(fixtureSpec) as unknown as Record<
+      string,
+      unknown
+    > & {
+      beats: { elements: Record<string, unknown>[] }[];
+    };
+    spec["schema"] = "scene-spec-v2";
+    for (const beat of spec.beats)
+      for (const element of beat.elements) {
+        element["anchor"] = { x: 0, y: 0 };
+        element["keyframes"] = (
+          element["keyframes"] as Record<string, unknown>[]
+        ).map(({ scale, ...keyframe }) => ({
+          ...keyframe,
+          ...(typeof scale === "number"
+            ? { scaleX: scale, scaleY: scale }
+            : {}),
+        }));
+      }
+    const parent = spec.beats[0]!.elements[0]!;
+    Object.assign(parent, {
+      anchor: { x: 0, y: 0 },
+      box: { x: 10, y: 20, width: 100, height: 50 },
+      keyframes: [
+        { frame: 0, rotation: 90, scaleX: 2, scaleY: 1, ease: "linear" },
+        { frame: 10, rotation: 90, scaleX: 3, scaleY: 1, ease: "easeIn" },
+      ],
+    });
+    spec.beats[0]!.elements.unshift({
+      ...structuredClone(parent),
+      elementId: "child",
+      parentElementId: parent.elementId,
+      box: { x: 5, y: 0, width: 20, height: 10 },
+      keyframes: [{ frame: 0, ease: "linear" }],
+    });
+    const compiled = compileSceneSpec(SceneSpecSchema.parse(spec));
+    const draws = compiled.frames[0]!.draws;
+    expect(draws.map((draw) => draw.elementId)).toEqual(["headline", "child"]);
+    expect(draws[0]?.transform).toEqual([0, 2, -1, 0, 10, 20]);
+    expect(draws[1]?.transform).toEqual([0, 2, -1, 0, 10, 30]);
+    expect(compiled.frames[5]!.draws[0]?.transform).toEqual([
+      0, 2.25, -1, 0, 10, 20,
+    ]);
   });
 });

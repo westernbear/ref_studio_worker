@@ -40,7 +40,7 @@ RUN mkdir -p /opt/rvs/model-artifacts /opt/rvs/models/easyocr /opt/rvs/vendor /o
     echo "e0734c1e29426d2a6213650383fec37051145fccaed8360c8fe30d75321d98ab  /tmp/wanted-sans.zip" | sha256sum -c - && \
     unzip -p /tmp/wanted-sans.zip variable/WantedSansVariable.ttf > /opt/rvs/fonts/WantedSansVariable.ttf
 
-FROM node@sha256:65932751ed4073ed02f5c04e494e4b2572a891b7dbea0568a863dc80341bf848 AS runtime
+FROM reference-video-studio-runtime:1.0.0 AS runtime
 
 ENV DEBIAN_FRONTEND=noninteractive \
     CI=true \
@@ -57,27 +57,19 @@ ENV DEBIAN_FRONTEND=noninteractive \
     RVS_MODEL_DIR=/opt/rvs/models \
     RVS_VENDOR_DIR=/opt/rvs/vendor \
     RVS_FONT_PATH=/opt/rvs/fonts/WantedSansVariable.ttf \
-    RVS_FFMPEG_PATH=/usr/bin/ffmpeg \
-    RVS_FFPROBE_PATH=/usr/bin/ffprobe \
+    RVS_FFMPEG_PATH=/opt/rvs/bin/ffmpeg \
+    RVS_FFPROBE_PATH=/opt/rvs/bin/ffprobe \
+    RVS_WORKER_IMAGE_DIGEST=sha256:8404a853a499143346f188f5ebefea9e6131c6f59e41c7c2b13b8827ad30c5f0 \
     HF_HUB_OFFLINE=1 \
     TRANSFORMERS_OFFLINE=1 \
     OMP_NUM_THREADS=4 \
     MKL_NUM_THREADS=4 \
     UV_PROJECT_ENVIRONMENT=/opt/compiler-venv
 
-RUN apt-get -o Acquire::Retries=5 -o Acquire::http::No-Cache=true -o Acquire::http::Pipeline-Depth=0 update && \
-    apt-get -o Acquire::Retries=5 -o Acquire::http::No-Cache=true -o Acquire::http::Pipeline-Depth=0 install -y --no-install-recommends \
-    ca-certificates curl ffmpeg libasound2 libatk-bridge2.0-0 libatk1.0-0 libcairo2 \
-    libatspi2.0-0 libcups2 libdbus-1-3 libdrm2 libfontconfig1 libfreetype6 \
-    libgbm1 libglib2.0-0 libharfbuzz0b libnspr4 libnss3 libpango-1.0-0 libx11-6 \
-    libx11-xcb1 libxcb1 libxcomposite1 libxdamage1 libxext6 libxfixes3 \
-    libxkbcommon0 libxrandr2 && rm -rf /var/lib/apt/lists/*
 COPY --from=python-runtime /usr/local/ /usr/local/
-COPY --from=assets /opt/chrome/ /opt/chrome/
 COPY --from=assets /opt/rvs/model-artifacts/ /opt/rvs/model-artifacts/
 COPY --from=assets /opt/rvs/models/ /opt/rvs/models/
 COPY --from=assets /opt/rvs/vendor/ /opt/rvs/vendor/
-COPY --from=assets /opt/rvs/fonts/ /opt/rvs/fonts/
 RUN curl -fsSLo /tmp/uv.tar.gz https://github.com/astral-sh/uv/releases/download/0.11.8/uv-x86_64-unknown-linux-gnu.tar.gz && \
     echo "56dd1b66701ecb62fe896abb919444e4b83c5e8645cca953e6ddd496ff8a0feb  /tmp/uv.tar.gz" | sha256sum -c - && \
     tar -xzf /tmp/uv.tar.gz -C /tmp && \

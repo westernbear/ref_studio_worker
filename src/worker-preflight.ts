@@ -4,8 +4,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { captureBrowserFrames } from "./capture/browser.js";
 import { runCommand, type CommandRunner } from "./process-runner.js";
+import {
+  assertRuntimeIdentity,
+  REGISTERED_RUNTIME,
+  runtimeSnapshotDigest,
+  sha256,
+  type RegisteredRuntimeSnapshot,
+} from "./runtime-snapshot.js";
 
-const CHROMIUM_VERSION = "151.0.7922.138";
 const PREFLIGHT_TIMEOUT_MS = 120_000;
 
 export type WorkerPreflightReport = Readonly<{
@@ -20,6 +26,7 @@ export type WorkerPreflightReport = Readonly<{
   ffprobe: true;
   tar: true;
   compilerModels: true;
+  runtimeSnapshotDigest: string;
   runtimeDigest: string;
 }>;
 
@@ -27,6 +34,8 @@ type Dependencies = Readonly<{
   runCommand?: CommandRunner;
   captureFrames?: typeof captureBrowserFrames;
   readIdentityFile?: (path: string) => Promise<Uint8Array>;
+  registeredRuntime?: RegisteredRuntimeSnapshot;
+  declaredImageDigest?: string;
 }>;
 
 export async function runWorkerPreflight(
@@ -38,28 +47,26 @@ export async function runWorkerPreflight(
   const readIdentityFile =
     dependencies.readIdentityFile ??
     ((path: string): Promise<Uint8Array> => readFile(path));
+  const registered = dependencies.registeredRuntime ?? REGISTERED_RUNTIME;
   const workspace = await mkdtemp(join(tmpdir(), "rvs-preflight-"));
   const options = {
     cwd: workspace,
     signal,
     timeoutMs: PREFLIGHT_TIMEOUT_MS,
   };
-  const chromePath = process.env.CHROME_PATH ?? "/opt/chrome/chrome";
-  const fontPath =
-    process.env.RVS_FONT_PATH ?? "/opt/rvs/fonts/WantedSansVariable.ttf";
+  const chromePath = process.env.CHROME_PATH ?? registered.chrome.path;
+  const fontPath = process.env.RVS_FONT_PATH ?? registered.font.path;
   const modelManifestPath =
     process.env.RVS_MODEL_MANIFEST_PATH ?? "/app/compiler/model-manifest.json";
   try {
     const chrome = await command(chromePath, ["--version"], options);
-    if (!chrome.stdout.includes(CHROMIUM_VERSION))
-      throw new Error("CHROMIUM_VERSION_MISMATCH");
     const ffmpeg = await command(
-      process.env.RVS_FFMPEG_PATH ?? "ffmpeg",
+      process.env.RVS_FFMPEG_PATH ?? registered.ffmpeg.path,
       ["-version"],
       options,
     );
     const ffprobe = await command(
-      process.env.RVS_FFPROBE_PATH ?? "ffprobe",
+      process.env.RVS_FFPROBE_PATH ?? registered.ffprobe.path,
       ["-version"],
       options,
     );
@@ -73,10 +80,38 @@ export async function runWorkerPreflight(
       ["-c", "from compiler.pipeline import verify_models; verify_models()"],
       options,
     );
-    const [modelManifest, font] = await Promise.all([
+    const [
+      modelManifest,
+      chromeBytes,
+      font,
+      ffmpegBytes,
+      ffprobeBytes,
+      nodeBytes,
+    ] = await Promise.all([
       readIdentityFile(modelManifestPath),
+      readIdentityFile(chromePath),
       readIdentityFile(fontPath),
+      readIdentityFile(process.env.RVS_FFMPEG_PATH ?? registered.ffmpeg.path),
+      readIdentityFile(process.env.RVS_FFPROBE_PATH ?? registered.ffprobe.path),
+      readIdentityFile(process.execPath),
     ]);
+    const identity = {
+      chromeVersion: chrome.stdout.trim().split(/\s+/u).at(-1) ?? "",
+      chromeSha256: sha256(chromeBytes),
+      fontSha256: sha256(font),
+      ffmpegVersion: ffmpeg.stdout.match(/^ffmpeg version (\S+)/u)?.[1] ?? "",
+      ffmpegSha256: sha256(ffmpegBytes),
+      ffprobeVersion:
+        ffprobe.stdout.match(/^ffprobe version (\S+)/u)?.[1] ?? "",
+      ffprobeSha256: sha256(ffprobeBytes),
+      nodeVersion: process.version.replace(/^v/u, ""),
+      nodeSha256: sha256(nodeBytes),
+      imageDigest:
+        dependencies.declaredImageDigest ??
+        process.env.RVS_WORKER_IMAGE_DIGEST ??
+        "",
+    };
+    assertRuntimeIdentity(identity, registered);
     const browser = await capture({
       workspace,
       framesDirectory: join(workspace, "frames"),
@@ -96,6 +131,10 @@ export async function runWorkerPreflight(
       onFrame: async () => undefined,
       renderContract: { kind: "preflight" },
     });
+    assertRuntimeIdentity(
+      { ...identity, renderer: browser.renderer },
+      registered,
+    );
     const facts = {
       status: "PASS" as const,
       chromiumVersion: browser.chromiumVersion,
@@ -109,7 +148,7 @@ export async function runWorkerPreflight(
       tar: true as const,
       compilerModels: true as const,
     };
-    const identity = {
+    const runtimeIdentity = {
       nodeVersion: process.version,
       modelManifestSha256: createHash("sha256")
         .update(modelManifest)
@@ -121,12 +160,15 @@ export async function runWorkerPreflight(
       rendererIdentity: createHash("sha256")
         .update(JSON.stringify(browser))
         .digest("hex"),
-      imageDigest: process.env.RVS_WORKER_IMAGE_DIGEST ?? null,
+      imageDigest: identity.imageDigest,
     };
     return {
       ...facts,
+      runtimeSnapshotDigest: runtimeSnapshotDigest(registered),
       runtimeDigest: createHash("sha256")
-        .update(JSON.stringify({ facts, identity }))
+        .update(
+          JSON.stringify({ facts, identity: runtimeIdentity, registered }),
+        )
         .digest("hex"),
     };
   } finally {

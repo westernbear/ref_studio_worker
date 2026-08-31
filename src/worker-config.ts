@@ -1,5 +1,9 @@
 import os from "node:os";
 import { z } from "zod";
+import {
+  parseBlenderCapabilityEnv,
+  type BlenderCapabilitySnapshot,
+} from "./blender-capability.js";
 
 const EnvSchema = z.object({
   RVS_API_BASE_URL: z.string().url(),
@@ -22,6 +26,7 @@ const EnvSchema = z.object({
   // before self-hosted-*-material-provider.ts existed.
   RVS_WAN_ALPHA_BASE_URL: z.string().url().optional(),
   RVS_HI3DGEN_BASE_URL: z.string().url().optional(),
+  RVS_BLENDER_CAPABILITY_JSON: z.string().optional(),
 });
 
 export type WorkerConfig = Readonly<{
@@ -35,6 +40,7 @@ export type WorkerConfig = Readonly<{
   mediaRequestTimeoutMs: number;
   wanAlphaBaseUrl?: string;
   hi3dgenBaseUrl?: string;
+  blenderCapability?: BlenderCapabilitySnapshot;
 }>;
 
 export function parseWorkerConfig(
@@ -60,6 +66,13 @@ export function parseWorkerConfig(
       : {}),
     ...(parsed.RVS_HI3DGEN_BASE_URL !== undefined
       ? { hi3dgenBaseUrl: parsed.RVS_HI3DGEN_BASE_URL }
+      : {}),
+    ...(parsed.RVS_BLENDER_CAPABILITY_JSON !== undefined
+      ? {
+          blenderCapability: parseBlenderCapabilityEnv(
+            parsed.RVS_BLENDER_CAPABILITY_JSON,
+          ),
+        }
       : {}),
   };
 }

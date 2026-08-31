@@ -407,6 +407,8 @@ export const createWorkflowJobHandler = (
         const assetDirectory = join(workspace, "scene-assets");
         await mkdir(assetDirectory, { recursive: true });
         const assetPaths = new Map<string, string>();
+        const assetDigests = new Map<string, string>();
+        const assetContentTypes = new Map<string, string>();
         for (const asset of payload.assets) {
           if (!SAFE_ASSET_ID.test(asset.assetId))
             throw new Error("WORKER_ASSET_ID_UNSAFE");
@@ -425,6 +427,8 @@ export const createWorkflowJobHandler = (
           if ((await fileSha256(destination)) !== asset.sha256)
             throw new Error("WORKER_ASSET_DIGEST_MISMATCH");
           assetPaths.set(asset.assetId, destination);
+          assetDigests.set(asset.assetId, asset.sha256);
+          assetContentTypes.set(asset.assetId, asset.contentType);
         }
         await progress("scene-render", 0.2, 0, frameCount);
         const generatedDeadline = AbortSignal.timeout(
@@ -432,24 +436,23 @@ export const createWorkflowJobHandler = (
         );
         const generatedSignal = AbortSignal.any([signal, generatedDeadline]);
         try {
-          // ponytail: a chat-driven scene patch re-renders the whole scene
-          // here, every time, even when only a handful of beats actually
-          // changed (see apps/api/src/refine-prompt.ts's applyScenePatch,
-          // which leaves the changed beat ids on the job record but does not
-          // act on them). Redrawing only the changed beats' frames and
-          // reusing the rest would cut re-render time, but it requires
-          // keeping the previous attempt's frame PNGs around -- several
-          // hundred megabytes per job -- and nobody has measured whether
-          // that storage cost is worth it or whether a full re-render is
-          // even slow enough to matter. Do this only once a real job's
-          // re-render latency has been measured and found to need it.
+          const renderCachePath = join(
+            root,
+            "rvs-render-cache",
+            createHash("sha256")
+              .update(`${payload.tenantId}\0${job.jobId}`)
+              .digest("hex"),
+          );
           const report = await renderGenerated(
             {
               spec,
               assetPaths,
+              assetDigests,
+              assetContentTypes,
               outPath: outputPath,
               signal: generatedSignal,
               scenePackagePath: join(workspace, "scene-package"),
+              renderCachePath,
             },
             { runCommand: command },
           );

@@ -10,14 +10,17 @@ describe("archiveScenePackage", () => {
   it("creates byte-identical archives for identical packages", async () => {
     const workspace = await mkdtemp(join(tmpdir(), "rvs-package-archive-"));
     try {
-      const directory = join(workspace, "package");
+      const directory = join(workspace, "first-package");
+      const duplicate = join(workspace, "second-package");
       await mkdir(directory);
+      await mkdir(duplicate);
       await writeFile(join(directory, "scene.json"), "{}\n");
+      await writeFile(join(duplicate, "scene.json"), "{}\n");
       const signal = new AbortController().signal;
       const first = join(workspace, "first.tar");
       const second = join(workspace, "second.tar");
       await archiveScenePackage(directory, first, signal, runCommand);
-      await archiveScenePackage(directory, second, signal, runCommand);
+      await archiveScenePackage(duplicate, second, signal, runCommand);
       const hash = (bytes: Uint8Array): string =>
         createHash("sha256").update(bytes).digest("hex");
       expect(hash(await readFile(first))).toBe(hash(await readFile(second)));

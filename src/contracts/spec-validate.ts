@@ -6,7 +6,12 @@
 // keeps it honest -- if it fails, re-copy from packages/contracts/src.
 // ---- vendored copy below, unmodified ----
 
-import { SceneSpecSchema, type SceneSpec } from "./scene-spec.js";
+import {
+  SceneSpecSchema,
+  type BeatV2,
+  type SceneSpec,
+  type SpecElementV2,
+} from "./scene-spec.js";
 
 // Fail-closed on a SceneSpec the renderer cannot honestly draw. Pure
 // function, no I/O, no clock -- same style as compileScene in
@@ -37,6 +42,40 @@ const fail = (token: string, detail?: string): never => {
 
 const EXTERNAL_URL = /^https?:\/\//iu;
 
+export function topologicallyOrderedElements(
+  beat: BeatV2,
+): readonly SpecElementV2[] {
+  const byId = new Map<string, SpecElementV2>();
+  for (const element of beat.elements) {
+    if (byId.has(element.elementId)) fail("ELEMENT_ID_DUPLICATE");
+    byId.set(element.elementId, element);
+  }
+  for (const element of beat.elements)
+    if (
+      element.parentElementId !== undefined &&
+      !byId.has(element.parentElementId)
+    )
+      fail("PARENT_NOT_FOUND");
+
+  const remaining = new Map(byId);
+  const emitted = new Set<string>();
+  const ordered: SpecElementV2[] = [];
+  while (remaining.size > 0) {
+    const ready = [...remaining.values()].filter(
+      (element) =>
+        element.parentElementId === undefined ||
+        emitted.has(element.parentElementId),
+    );
+    if (ready.length === 0) fail("PARENT_CYCLE");
+    for (const element of ready) {
+      ordered.push(element);
+      emitted.add(element.elementId);
+      remaining.delete(element.elementId);
+    }
+  }
+  return ordered;
+}
+
 export type ValidateSceneSpecOptions = Readonly<{
   // Whether a generated asset must already carry the half of its
   // provenance that only exists once its bytes do (`tool` and `sha256`).
@@ -55,6 +94,9 @@ export function validateSceneSpec(
   const parsed = SceneSpecSchema.safeParse(spec);
   if (!parsed.success) return fail("SPEC_SCHEMA_INVALID");
   const value = parsed.data;
+
+  if (value.schema === "scene-spec-v2")
+    for (const beat of value.beats) topologicallyOrderedElements(beat);
 
   for (const beat of value.beats)
     if (

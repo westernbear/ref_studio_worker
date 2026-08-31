@@ -1,7 +1,13 @@
 import { createHash } from "node:crypto";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import {
+  parseBlenderCapability,
+  REGISTERED_BLENDER,
+  type BlenderCapabilitySnapshot,
+} from "./blender-capability.js";
+import { parseGlbContract } from "./blender-glb-contract.js";
 import { deriveMaterialSeed } from "./material-seed.js";
 import {
   MaterialGenerationError,
@@ -98,8 +104,8 @@ export type SelfHosted3DMaterialProviderConfig = Readonly<{
   // Undefined means "not configured" -- generate() then refuses by name,
   // the same fail-closed stance unavailableMaterialProvider takes.
   baseUrl: string | undefined;
-  blenderPath?: string;
-  samples?: number;
+  capability?: BlenderCapabilitySnapshot;
+  containerRuntimePath?: string;
   runCommand?: CommandRunner;
   client?: Hi3DGenClient;
 }>;
@@ -178,6 +184,29 @@ bpy.ops.render.render(write_still=True)
 
 const PNG_SIGNATURE = Uint8Array.from([137, 80, 78, 71, 13, 10, 26, 10]);
 
+export function canonicalizeBlenderPng(bytes: Uint8Array): Uint8Array {
+  if (bytes.byteLength < PNG_SIGNATURE.byteLength)
+    throw new Error("HI3DGEN_RENDER_QC_FAILED");
+  const chunks: Uint8Array[] = [bytes.subarray(0, PNG_SIGNATURE.byteLength)];
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  let offset = PNG_SIGNATURE.byteLength;
+  while (offset + 12 <= bytes.byteLength) {
+    const length = view.getUint32(offset);
+    const end = offset + 12 + length;
+    if (end > bytes.byteLength) throw new Error("HI3DGEN_RENDER_QC_FAILED");
+    const firstTypeByte = bytes[offset + 4];
+    if (
+      firstTypeByte !== undefined &&
+      firstTypeByte >= 65 &&
+      firstTypeByte <= 90
+    )
+      chunks.push(bytes.subarray(offset, end));
+    offset = end;
+  }
+  if (offset !== bytes.byteLength) throw new Error("HI3DGEN_RENDER_QC_FAILED");
+  return new Uint8Array(Buffer.concat(chunks));
+}
+
 // Verifies the rendered PNG is actually the shape asked for -- the same
 // kind of "check, don't just trust" QC gen-render-delivery.ts's ffprobe
 // validation and openai-image-material.ts's IHDR check both do -- before
@@ -201,18 +230,33 @@ function readPngIhdr(
 // channel `film_transparent` asked Blender for.
 const ALPHA_COLOR_TYPES = new Set([4, 6]);
 
-async function renderMeshWithBlender(
+export type BlenderRenderResult = Readonly<{
+  kind: "still";
+  frames: readonly Uint8Array[];
+  glbSha256: string;
+  frameSha256: readonly string[];
+}>;
+
+export async function renderGlbWithBlender(
   meshBytes: Uint8Array,
   options: Readonly<{
     width: number;
     height: number;
     seed: number;
     samples: number;
-    blenderPath: string;
+    containerRuntimePath: string;
     run: CommandRunner;
     signal: AbortSignal;
+    capability: BlenderCapabilitySnapshot;
+    localTextures?: ReadonlyMap<string, Uint8Array>;
   }>,
-): Promise<Uint8Array> {
+): Promise<BlenderRenderResult> {
+  const localTextures = options.localTextures ?? new Map();
+  const contract = parseGlbContract(
+    meshBytes,
+    options.capability.budget,
+    localTextures,
+  );
   const workspace = await mkdtemp(join(tmpdir(), "rvs-hi3dgen-"));
   try {
     const meshPath = join(workspace, "mesh.glb");
@@ -220,12 +264,20 @@ async function renderMeshWithBlender(
     const argsPath = join(workspace, "args.json");
     const outputPath = join(workspace, "render.png");
     await writeFile(meshPath, meshBytes);
+    if (localTextures.size > 0) {
+      await mkdir(join(workspace, "assets"));
+      await Promise.all(
+        [...localTextures].map(([path, bytes]) =>
+          writeFile(join(workspace, path), bytes),
+        ),
+      );
+    }
     await writeFile(scriptPath, buildBlenderScript(), "utf8");
     await writeFile(
       argsPath,
       JSON.stringify({
-        meshPath,
-        outputPath,
+        meshPath: "/workspace/mesh.glb",
+        outputPath: "/workspace/render.png",
         width: options.width,
         height: options.height,
         seed: options.seed,
@@ -234,18 +286,41 @@ async function renderMeshWithBlender(
       "utf8",
     );
     await options.run(
-      options.blenderPath,
+      options.containerRuntimePath,
       [
+        "run",
+        "--rm",
+        "--network",
+        "none",
+        "--cpus",
+        "2",
+        "--memory",
+        "4g",
+        "--pids-limit",
+        "256",
+        "--read-only",
+        "--tmpfs",
+        "/tmp:rw,noexec,nosuid,size=512m",
+        "-e",
+        "HOME=/tmp",
+        "--entrypoint",
+        "/usr/bin/blender",
+        "-v",
+        `${workspace}:/workspace`,
+        `${REGISTERED_BLENDER.image}@${options.capability.imageDigest}`,
         "--background",
         "--factory-startup",
+        "--disable-autoexec",
+        "--python-exit-code",
+        "1",
         "--python",
-        scriptPath,
+        "/workspace/render.py",
         "--",
-        argsPath,
+        "/workspace/args.json",
       ],
-      { cwd: workspace, signal: options.signal },
+      { cwd: workspace, signal: options.signal, timeoutMs: 300_000 },
     );
-    const png = await readFile(outputPath);
+    const png = canonicalizeBlenderPng(await readFile(outputPath));
     const ihdr = readPngIhdr(png);
     if (
       !ihdr ||
@@ -254,7 +329,13 @@ async function renderMeshWithBlender(
       !ALPHA_COLOR_TYPES.has(ihdr.colorType)
     )
       throw new Error("HI3DGEN_RENDER_QC_FAILED");
-    return png;
+    const frameSha256 = createHash("sha256").update(png).digest("hex");
+    return {
+      kind: "still",
+      frames: [png],
+      glbSha256: contract.sha256,
+      frameSha256: [frameSha256],
+    };
   } finally {
     await rm(workspace, { recursive: true, force: true });
   }
@@ -264,8 +345,7 @@ export function createSelfHosted3DMaterialProvider(
   config: SelfHosted3DMaterialProviderConfig,
 ): MaterialProvider {
   const baseUrl = config.baseUrl;
-  const blenderPath = config.blenderPath ?? "blender";
-  const samples = config.samples ?? BLENDER_SAMPLES;
+  const containerRuntimePath = config.containerRuntimePath ?? "docker";
   const client = config.client ?? defaultHi3DGenClient;
   const run = config.runCommand ?? runCommand;
   return {
@@ -277,6 +357,7 @@ export function createSelfHosted3DMaterialProvider(
           request.assetId,
           "RVS_HI3DGEN_BASE_URL is not configured for this deployment",
         );
+      const capability = parseBlenderCapability(config.capability);
       const seed =
         request.seed ?? deriveMaterialSeed(request.assetId, request.prompt);
       const mesh = await client(
@@ -284,15 +365,18 @@ export function createSelfHosted3DMaterialProvider(
         { prompt: request.prompt, seed },
         signal,
       );
-      const png = await renderMeshWithBlender(mesh, {
+      const render = await renderGlbWithBlender(mesh, {
         width: request.canvas.width,
         height: request.canvas.height,
         seed,
-        samples,
-        blenderPath,
+        samples: BLENDER_SAMPLES,
+        containerRuntimePath,
         run,
         signal,
+        capability,
       });
+      const png = render.frames[0];
+      if (png === undefined) throw new Error("HI3DGEN_RENDER_QC_FAILED");
       const sha256 = createHash("sha256").update(png).digest("hex");
       return {
         bytes: png,
