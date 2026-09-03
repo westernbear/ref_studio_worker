@@ -43,9 +43,9 @@ export type MaterialRequest = Readonly<{
   // How the scene asked for this material to be made: "flat" for a 2D
   // generation, "object" for a rendered three-dimensional thing. Always
   // present -- planSceneAssets normalises an absent field to "flat" -- so
-  // a provider (and restrictToForm below) never has to re-decide what a
-  // missing value meant. Distinct from `kind`, which is what the renderer
-  // draws: an object-form request still comes back as an image.
+  // createMaterialProvider never has to re-decide what a missing value
+  // meant. Distinct from `kind`, which is what the renderer draws: an
+  // object-form request still comes back as an image.
   form: SpecAssetForm;
   canvas: SceneSpec["canvas"];
 }>;
@@ -118,70 +118,58 @@ export const unavailableMaterialProvider: MaterialProvider = {
   },
 };
 
-// Narrows a real provider to the one kind it actually handles, refusing
-// every other kind through `fallback` (the fail-closed stub by default)
-// instead of letting it silently attempt -- or silently succeed at -- a
-// kind it was never built for. This is how the image provider gets wired
-// in without widening what video or font material can do: each lands as
-// its own `restrictToKind` call, composed alongside the others, so an
-// unimplemented kind keeps failing closed rather than falling through to
-// whichever provider happens to run last.
-//
-// `tool` forwards to the underlying provider's `tool` rather than copying
-// it once at construction time, because a provider whose identity is only
-// known after a call completes (see remote-image-material-provider.ts)
-// needs produceMaterial's post-`generate()` read of `.tool` to see the
-// up-to-date value.
-export function restrictToKind(
-  kind: MaterialKind,
-  provider: MaterialProvider,
-  fallback: MaterialProvider = unavailableMaterialProvider,
-): MaterialProvider {
-  // Tracks which of the two actually handled the most recent request, so
-  // the `tool` getter reflects whichever one produceMaterial is about to
-  // check -- not always `provider`, which would misreport a request the
-  // fallback served instead.
-  let active: MaterialProvider = provider;
-  return {
-    get tool() {
-      return active.tool;
-    },
-    generate: (request, signal) => {
-      active = request.kind === kind ? provider : fallback;
-      return active.generate(request, signal);
-    },
-  };
-}
+export type MaterialProviderFactoryOptions = Readonly<{
+  requestImage?: (
+    request: MaterialRequest,
+    signal: AbortSignal,
+  ) => Promise<GeneratedMaterial>;
+  object?: MaterialProvider;
+  video?: MaterialProvider;
+}>;
 
-// The same fallback chaining as restrictToKind, one field over. It exists
-// because `kind` alone stopped being enough to pick a provider: the
-// Hi3DGen+Blender provider and the remote 2D image provider both answer
-// an `image` request and both hand back a PNG, so composing them by kind
-// would have them fight over every generated image. `form` is the field
-// that tells them apart, and routing on it is a different question from
-// restricting by kind -- hence a second combinator rather than widening
-// the first, which would have to take a predicate and stop saying what it
-// means in its own name.
-//
-// Deliberately not a `kind` of its own: see SPEC_ASSET_FORMS in the scene
-// schema. The renderer draws an image either way; only the way the bytes
-// are made differs.
-//
-// `tool` tracks the active provider for the same reason restrictToKind's
-// does -- produceMaterial reads it after generate() returns, and it must
-// name whichever provider actually served the request.
-export function restrictToForm(
-  form: SpecAssetForm,
-  provider: MaterialProvider,
-  fallback: MaterialProvider = unavailableMaterialProvider,
+// Routes one request to the provider that owns that kind/form. Image+object
+// is Hi3DGen+Blender; other images go through the API relay (`requestImage`);
+// video is Wan-Alpha; everything else fails closed.
+export function createMaterialProvider(
+  options: MaterialProviderFactoryOptions,
 ): MaterialProvider {
-  let active: MaterialProvider = provider;
+  let imageTool = "unset";
+  const image: MaterialProvider | undefined =
+    options.requestImage === undefined
+      ? undefined
+      : {
+          get tool() {
+            return imageTool;
+          },
+          generate: async (request, signal) => {
+            const requestImage = options.requestImage;
+            if (requestImage === undefined)
+              throw new MaterialGenerationError(
+                "MATERIAL_PROVIDER_UNAVAILABLE",
+                request.assetId,
+              );
+            const material = await requestImage(request, signal);
+            imageTool = material.provenance.tool;
+            return material;
+          },
+        };
+  let active: MaterialProvider =
+    image ??
+    options.object ??
+    options.video ??
+    unavailableMaterialProvider;
   return {
     get tool() {
       return active.tool;
     },
     generate: (request, signal) => {
-      active = request.form === form ? provider : fallback;
+      if (request.kind === "image" && request.form === "object")
+        active = options.object ?? unavailableMaterialProvider;
+      else if (request.kind === "image")
+        active = image ?? unavailableMaterialProvider;
+      else if (request.kind === "video")
+        active = options.video ?? unavailableMaterialProvider;
+      else active = unavailableMaterialProvider;
       return active.generate(request, signal);
     },
   };

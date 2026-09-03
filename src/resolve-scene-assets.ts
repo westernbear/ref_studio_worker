@@ -1,7 +1,6 @@
-import { createHash } from "node:crypto";
-import { createReadStream } from "node:fs";
 import { mkdir, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { fileSha256 } from "./file-sha256.js";
 import {
   planSceneAssets,
   SceneAssetError,
@@ -69,12 +68,7 @@ const KIND_CONTENT_TYPES: Readonly<
 // the assets directory. planSceneAssets already rejects duplicate ids, and
 // SceneSpecSchema requires a non-empty string, but neither forbids a slash.
 export const SAFE_ASSET_ID = /^[A-Za-z0-9._-]+$/u;
-
-export const fileSha256 = async (path: string): Promise<string> => {
-  const hash = createHash("sha256");
-  for await (const chunk of createReadStream(path)) hash.update(chunk);
-  return hash.digest("hex");
-};
+export { fileSha256 };
 
 const checkedContentType = (
   assetId: string,

@@ -2,8 +2,13 @@ import { createHash } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { z } from "zod";
+import {
+  h264CanvasMismatch,
+  parseFfprobeJson,
+  videoStream,
+} from "./ffprobe-qc.js";
 import { deriveMaterialSeed } from "./material-seed.js";
+import { postGenerate } from "./post-generate.js";
 import {
   MaterialGenerationError,
   type MaterialProvider,
@@ -12,7 +17,7 @@ import {
 import { runCommand, type CommandRunner } from "./process-runner.js";
 
 // The worker's other half of the video material seam. Unlike the image
-// provider (remote-image-material-provider.ts), which has no outbound
+// provider (createMaterialProvider's requestImage path), which has no outbound
 // network and forwards through the API relay, a self-hosted inference
 // service lives on worker-internal itself (docker-compose.yml) -- the
 // worker calls it directly, no relay, no internet, isolation intact.
@@ -57,61 +62,12 @@ export const WAN_ALPHA_NATIVE = Object.freeze({
 
 export const WAN_ALPHA_TOOL = "wan-alpha@1";
 
-// The self-hosted service's own HTTP contract, as documented to me --
-// nothing here has been exercised against a running Wan-Alpha instance.
-// Isolated behind this one injectable function so a test can supply
-// whatever bytes it wants without a network call, exactly the shape
-// remote-image-material-provider.ts's WorkerApi dependency takes.
-export type WanAlphaClient = (
-  baseUrl: string,
-  request: Readonly<{ prompt: string; seed: number }>,
-  signal: AbortSignal,
-) => Promise<Uint8Array>;
-
-const defaultWanAlphaClient: WanAlphaClient = async (
-  baseUrl,
-  request,
-  signal,
-) => {
-  const response = await fetch(`${baseUrl.replace(/\/+$/u, "")}/v1/generate`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ prompt: request.prompt, seed: request.seed }),
-    signal,
-  });
-  if (!response.ok)
-    throw new Error(`WAN_ALPHA_REQUEST_FAILED:${response.status}`);
-  return new Uint8Array(await response.arrayBuffer());
-};
-
 export type SelfHostedVideoMaterialProviderConfig = Readonly<{
   // Undefined means "not configured" -- generate() then refuses by name,
   // the same fail-closed stance unavailableMaterialProvider takes.
   baseUrl: string | undefined;
   runCommand?: CommandRunner;
-  client?: WanAlphaClient;
 }>;
-
-const ProbeSchema = z.object({
-  streams: z.array(
-    z
-      .object({
-        codec_type: z.string(),
-        codec_name: z.string().optional(),
-        pix_fmt: z.string().optional(),
-        width: z.number().int().optional(),
-        height: z.number().int().optional(),
-        avg_frame_rate: z.string().optional(),
-        nb_read_frames: z.string().optional(),
-      })
-      .passthrough(),
-  ),
-});
-
-const frameRate = (value: string | undefined): number => {
-  const [numerator, denominator] = (value ?? "").split("/").map(Number);
-  return numerator && denominator ? numerator / denominator : Number.NaN;
-};
 
 // Resizes and re-times the native stacked clip to the scene's own canvas,
 // fps and frame count, then checks the result before trusting it.
@@ -183,18 +139,14 @@ async function retimeAlphaVideo(
       ],
       { cwd: workspace, signal },
     );
-    const parsed = ProbeSchema.parse(JSON.parse(probe.stdout));
-    const video = parsed.streams.find(
-      (stream) => stream.codec_type === "video",
-    );
+    const video = videoStream(parseFfprobeJson(probe.stdout));
     if (
-      !video ||
-      video.codec_name !== "h264" ||
-      video.pix_fmt !== "yuv420p" ||
-      video.width !== canvas.width ||
-      video.height !== stackedHeight ||
-      frameRate(video.avg_frame_rate) !== canvas.fps ||
-      Number(video.nb_read_frames) !== canvas.frameCount
+      h264CanvasMismatch(video, {
+        width: canvas.width,
+        height: stackedHeight,
+        fps: canvas.fps,
+        frameCount: canvas.frameCount,
+      })
     )
       throw new Error("WAN_ALPHA_RETIME_QC_FAILED");
     return await readFile(outputPath);
@@ -207,7 +159,6 @@ export function createSelfHostedVideoMaterialProvider(
   config: SelfHostedVideoMaterialProviderConfig,
 ): MaterialProvider {
   const baseUrl = config.baseUrl;
-  const client = config.client ?? defaultWanAlphaClient;
   const run = config.runCommand ?? runCommand;
   return {
     tool: WAN_ALPHA_TOOL,
@@ -220,10 +171,11 @@ export function createSelfHostedVideoMaterialProvider(
         );
       const seed =
         request.seed ?? deriveMaterialSeed(request.assetId, request.prompt);
-      const native = await client(
+      const native = await postGenerate(
         baseUrl,
         { prompt: request.prompt, seed },
         signal,
+        "WAN_ALPHA_REQUEST_FAILED",
       );
       const bytes = await retimeAlphaVideo(native, request.canvas, run, signal);
       const sha256 = createHash("sha256").update(bytes).digest("hex");

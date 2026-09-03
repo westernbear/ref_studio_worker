@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { canonicalJson } from "../contracts/canonical-json.js";
 import type {
   BeatV2,
   Ease,
@@ -68,24 +69,6 @@ export type SpecCompilation = {
 // deliberate, narrow scope boundary, not an oversight; see the matching
 // comment at generated.ts's video-kind fallback for the asset-side half of
 // this same boundary.
-
-// Copied from apps/worker/src/scene/compile.ts (canonicalJson) rather than
-// imported -- see ruling 3: compile.ts, the restore track's compiler, stays
-// byte-unchanged. Duplicating this ~6-line pure function is the accepted
-// cost of that.
-const isJsonObject = (
-  value: unknown,
-): value is { readonly [key: string]: unknown } =>
-  typeof value === "object" && value !== null && !Array.isArray(value);
-function canonicalJson(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
-  if (isJsonObject(value))
-    return `{${Object.keys(value)
-      .sort()
-      .map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`)
-      .join(",")}}`;
-  return JSON.stringify(value);
-}
 
 const EASE: Record<Ease, (t: number) => number> = {
   linear: (t) => t,

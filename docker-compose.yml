@@ -154,7 +154,7 @@ services:
       RVS_HI3DGEN_WEIGHTS: ${RVS_HI3DGEN_WEIGHTS:-/models/hi3dgen}
       # Hi3DGen is image-to-3D. The worker asks for material with a prompt
       # and nothing else (see self-hosted-3d-material-provider.ts's
-      # Hi3DGenClient), so this service has to draw the reference image
+      # postGenerate helper), so this service has to draw the reference image
       # itself before it can lift it into a mesh. Unset this and an
       # object-form asset fails by name rather than silently returning
       # something that is not what the scene asked for.

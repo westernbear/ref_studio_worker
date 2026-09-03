@@ -1,4 +1,7 @@
 import { createHash } from "node:crypto";
+import { canonicalJson } from "../contracts/canonical-json.js";
+
+export { canonicalJson };
 
 export type Json =
   | null
@@ -137,19 +140,6 @@ export type Compilation = {
   readonly browserPassSpec: BrowserPassSpec;
 };
 
-const isJsonObject = (
-  value: unknown,
-): value is { readonly [key: string]: unknown } =>
-  typeof value === "object" && value !== null && !Array.isArray(value);
-export function canonicalJson(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
-  if (isJsonObject(value))
-    return `{${Object.keys(value)
-      .sort()
-      .map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`)
-      .join(",")}}`;
-  return JSON.stringify(value);
-}
 function digest(value: unknown): string {
   return createHash("sha256").update(canonicalJson(value)).digest("hex");
 }

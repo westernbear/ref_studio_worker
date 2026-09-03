@@ -8,6 +8,10 @@ import {
   type BrowserCaptureInput,
   type BrowserCaptureReport,
 } from "./capture/browser.js";
+import {
+  parseFfprobeJson,
+  validateDeliveryQc,
+} from "./ffprobe-qc.js";
 import { runCommand, type CommandRunner } from "./process-runner.js";
 import { createRenderApp } from "./render-app/index.js";
 import {
@@ -161,41 +165,6 @@ export const CompilationSchema = z
       .passthrough(),
   })
   .strict();
-const Probe = z.object({
-  format: z.object({ duration: z.string() }),
-  streams: z.array(
-    z.discriminatedUnion("codec_type", [
-      z.object({
-        codec_type: z.literal("video"),
-        codec_name: z.string(),
-        profile: z.string(),
-        level: z.number().int(),
-        width: z.number().int().positive(),
-        height: z.number().int().positive(),
-        pix_fmt: z.string(),
-        avg_frame_rate: z.string(),
-        nb_read_frames: z.string(),
-        color_space: z.string(),
-        color_transfer: z.string(),
-        color_primaries: z.string(),
-      }),
-      z.object({
-        codec_type: z.literal("audio"),
-        codec_name: z.string(),
-        profile: z.string(),
-        channels: z.number().int().positive(),
-        sample_rate: z.string(),
-      }),
-    ]),
-  ),
-  frames: z.array(
-    z.object({
-      media_type: z.enum(["video", "audio"]),
-      key_frame: z.number().int().min(0).max(1),
-    }),
-  ),
-});
-
 export const DELIVERY_FPS = 30;
 export const DELIVERY_FRAME_COUNT = 120;
 const DELIVERY_GOP = 60;
@@ -223,19 +192,6 @@ export type RenderDeliveryDependencies = Readonly<{
   chromePath?: string;
   fontPath?: string;
 }>;
-
-const fraction = (value: string): number => {
-  const [numerator, denominator] = value.split("/").map(Number);
-  if (
-    numerator === undefined ||
-    denominator === undefined ||
-    !Number.isFinite(numerator) ||
-    !Number.isFinite(denominator) ||
-    denominator === 0
-  )
-    return Number.NaN;
-  return numerator / denominator;
-};
 
 const parseEvidence = (
   evidence: Record<string, unknown>,
@@ -276,37 +232,21 @@ const bindCompilation = (
 };
 
 const validateDelivery = (raw: string): Record<string, Json> => {
-  const probe = Probe.parse(JSON.parse(raw));
-  const video = probe.streams.find((stream) => stream.codec_type === "video");
-  const audio = probe.streams.find((stream) => stream.codec_type === "audio");
-  const keyFrames = probe.frames
-    .filter((frame) => frame.media_type === "video")
-    .flatMap((frame, index) => (frame.key_frame === 1 ? [index] : []));
-  const duration = Number(probe.format.duration);
-  if (
-    !video ||
-    !audio ||
-    video.codec_name !== "h264" ||
-    video.profile !== "High" ||
-    video.level !== 41 ||
-    video.width !== 1080 ||
-    video.height !== 1920 ||
-    video.pix_fmt !== "yuv420p" ||
-    Number(video.nb_read_frames) !== DELIVERY_FRAME_COUNT ||
-    fraction(video.avg_frame_rate) !== DELIVERY_FPS ||
-    video.color_space !== "bt709" ||
-    video.color_transfer !== "bt709" ||
-    video.color_primaries !== "bt709" ||
-    keyFrames.length !== DELIVERY_FRAME_COUNT / DELIVERY_GOP ||
-    keyFrames.some((frame, index) => frame !== index * DELIVERY_GOP) ||
-    audio.codec_name !== "aac" ||
-    audio.profile !== "LC" ||
-    audio.channels !== 2 ||
-    audio.sample_rate !== "48000" ||
-    !Number.isFinite(duration) ||
-    Math.abs(duration - 4) > 0.05
-  )
-    throw new Error("DELIVERY_QC_FAILED");
+  const { video, audio, duration } = validateDeliveryQc(
+    parseFfprobeJson(raw),
+    {
+      width: 1080,
+      height: 1920,
+      fps: DELIVERY_FPS,
+      frameCount: DELIVERY_FRAME_COUNT,
+    },
+    {
+      errorToken: "DELIVERY_QC_FAILED",
+      gop: DELIVERY_GOP,
+      durationSeconds: 4,
+      requireColorMetadata: true,
+    },
+  );
   return {
     status: "PASS",
     durationMs: Math.round(duration * 1_000),
@@ -318,7 +258,7 @@ const validateDelivery = (raw: string): Record<string, Json> => {
     videoProfile: video.profile,
     videoLevel: "4.1",
     pixelFormat: video.pix_fmt,
-    colorSpace: video.color_space,
+    colorSpace: video.color_space ?? "bt709",
     gopSize: DELIVERY_GOP,
     closedGop: true,
     fastStart: true,

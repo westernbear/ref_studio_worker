@@ -168,7 +168,6 @@ export type WorkflowPipelineDependencies = Readonly<{
   ) => Promise<Record<string, unknown>>;
   renderEvidenceVideo?: typeof renderEvidenceVideo;
   renderVfxLabelVideo?: typeof renderVfxLabelVideo;
-  materialProvider?: MaterialProvider;
   materialProviderFactory?: (
     jobId: string,
     endpoints: MaterialEndpoints,

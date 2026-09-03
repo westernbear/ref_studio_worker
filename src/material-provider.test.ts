@@ -1,10 +1,9 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
+  createMaterialProvider,
   MaterialGenerationError,
   produceMaterial,
-  restrictToForm,
-  restrictToKind,
   unavailableMaterialProvider,
   type MaterialProvider,
   type MaterialRequest,
@@ -154,95 +153,9 @@ describe("the material provider seam", () => {
   });
 });
 
-describe("restrictToKind", () => {
+describe("createMaterialProvider", () => {
   const videoRequest: MaterialRequest = { ...request, kind: "video" };
-
-  it("delegates a matching kind to the wrapped provider", async () => {
-    const restricted = restrictToKind("image", provider({}));
-    const material = await produceMaterial(restricted, request, signal);
-    expect(material.bytes).toEqual(bytes);
-  });
-
-  it("refuses every other kind through the fallback, by default the fail-closed stub", async () => {
-    const restricted = restrictToKind("image", provider({}));
-    await expect(
-      produceMaterial(restricted, videoRequest, signal),
-    ).rejects.toThrow(/MATERIAL_PROVIDER_UNAVAILABLE/u);
-  });
-
-  it("never calls the wrapped provider for a kind it does not own", async () => {
-    let called = false;
-    const restricted = restrictToKind("image", {
-      tool: "fake-provider@1",
-      generate: async () => {
-        called = true;
-        throw new Error("must not be called");
-      },
-    });
-    await produceMaterial(restricted, videoRequest, signal).catch(
-      () => undefined,
-    );
-    expect(called).toBe(false);
-  });
-
-  it("uses a given fallback instead of the default stub", async () => {
-    const fallback: MaterialProvider = {
-      tool: "video-provider@1",
-      generate: async () => ({
-        bytes,
-        contentType: "video/mp4",
-        provenance: {
-          tool: "video-provider@1",
-          prompt: videoRequest.prompt,
-          sha256: bytesSha,
-        },
-      }),
-    };
-    const restricted = restrictToKind("image", provider({}), fallback);
-    const material = await produceMaterial(restricted, videoRequest, signal);
-    expect(material.provenance.tool).toBe("video-provider@1");
-  });
-
-  it("reports the wrapped provider's tool as it stands after generate(), not at construction", async () => {
-    // A provider whose identity is only known once its call completes (the
-    // remote OpenAI-backed provider is exactly this shape) still has to
-    // pass produceMaterial's post-generate() tool check.
-    let tool = "unset";
-    const dynamic: MaterialProvider = {
-      get tool() {
-        return tool;
-      },
-      generate: async (req) => {
-        tool = "openai:gpt-image-2";
-        return {
-          bytes,
-          contentType: "image/png",
-          provenance: { tool, prompt: req.prompt, sha256: bytesSha },
-        };
-      },
-    };
-    const restricted = restrictToKind("image", dynamic);
-    const material = await produceMaterial(restricted, request, signal);
-    expect(material.provenance.tool).toBe("openai:gpt-image-2");
-  });
-});
-
-// Two providers both answer `image` requests -- the 2D one and the
-// Hi3DGen+Blender one -- so kind alone cannot pick between them.
-describe("restrictToForm", () => {
   const objectRequest: MaterialRequest = { ...request, form: "object" };
-  const flatProvider: MaterialProvider = {
-    tool: "flat-provider@1",
-    generate: async (req) => ({
-      bytes,
-      contentType: "image/png",
-      provenance: {
-        tool: "flat-provider@1",
-        prompt: req.prompt,
-        sha256: bytesSha,
-      },
-    }),
-  };
   const objectProvider: MaterialProvider = {
     tool: "object-provider@1",
     generate: async (req) => ({
@@ -255,45 +168,102 @@ describe("restrictToForm", () => {
       },
     }),
   };
+  const videoProvider: MaterialProvider = {
+    tool: "video-provider@1",
+    generate: async (req) => ({
+      bytes,
+      contentType: "video/mp4",
+      provenance: {
+        tool: "video-provider@1",
+        prompt: req.prompt,
+        sha256: bytesSha,
+      },
+    }),
+  };
 
-  it("delegates a matching form to the wrapped provider", async () => {
-    const routed = restrictToForm("object", objectProvider, flatProvider);
+  it("sends a flat image request through requestImage", async () => {
+    const routed = createMaterialProvider({
+      requestImage: async () => ({
+        bytes,
+        contentType: "image/png",
+        provenance: {
+          tool: "openai:gpt-image-2",
+          prompt: request.prompt,
+          sha256: bytesSha,
+        },
+      }),
+    });
+    const material = await produceMaterial(routed, request, signal);
+    expect(material.provenance.tool).toBe("openai:gpt-image-2");
+  });
+
+  it("routes object-form image requests to the object provider", async () => {
+    let imageCalled = false;
+    const routed = createMaterialProvider({
+      requestImage: async () => {
+        imageCalled = true;
+        throw new Error("must not be called");
+      },
+      object: objectProvider,
+    });
     const material = await produceMaterial(routed, objectRequest, signal);
     expect(material.provenance.tool).toBe("object-provider@1");
+    expect(imageCalled).toBe(false);
   });
 
-  it("sends every other form to the fallback", async () => {
-    const routed = restrictToForm("object", objectProvider, flatProvider);
-    const material = await produceMaterial(routed, request, signal);
-    expect(material.provenance.tool).toBe("flat-provider@1");
+  it("routes video requests to the video provider", async () => {
+    const routed = createMaterialProvider({ video: videoProvider });
+    const material = await produceMaterial(routed, videoRequest, signal);
+    expect(material.provenance.tool).toBe("video-provider@1");
   });
 
-  it("never calls the wrapped provider for a form it does not own", async () => {
-    let called = false;
-    const routed = restrictToForm(
-      "object",
-      {
-        tool: "object-provider@1",
-        generate: async () => {
-          called = true;
-          throw new Error("must not be called");
+  it("refuses a kind with no wired provider through the fail-closed stub", async () => {
+    const routed = createMaterialProvider({
+      requestImage: async () => ({
+        bytes,
+        contentType: "image/png",
+        provenance: {
+          tool: "openai:gpt-image-2",
+          prompt: request.prompt,
+          sha256: bytesSha,
         },
-      },
-      flatProvider,
-    );
-    await produceMaterial(routed, request, signal);
-    expect(called).toBe(false);
+      }),
+    });
+    await expect(
+      produceMaterial(routed, videoRequest, signal),
+    ).rejects.toThrow(/MATERIAL_PROVIDER_UNAVAILABLE/u);
   });
 
-  it("refuses through the fail-closed stub when given no fallback", async () => {
-    const routed = restrictToForm("object", objectProvider);
-    await expect(produceMaterial(routed, request, signal)).rejects.toThrow(
-      /MATERIAL_PROVIDER_UNAVAILABLE/u,
-    );
+  it("exposes the API-declared tool once requestImage has resolved", async () => {
+    const routed = createMaterialProvider({
+      requestImage: async (req) => ({
+        bytes,
+        contentType: "image/png",
+        provenance: {
+          tool: "openai:gpt-image-2",
+          prompt: req.prompt,
+          sha256: bytesSha,
+        },
+      }),
+    });
+    expect(routed.tool).toBe("unset");
+    await produceMaterial(routed, request, signal);
+    expect(routed.tool).toBe("openai:gpt-image-2");
   });
 
   it("reports whichever provider actually served the request as its tool", async () => {
-    const routed = restrictToForm("object", objectProvider, flatProvider);
+    const routed = createMaterialProvider({
+      requestImage: async (req) => ({
+        bytes,
+        contentType: "image/png",
+        provenance: {
+          tool: "flat-provider@1",
+          prompt: req.prompt,
+          sha256: bytesSha,
+        },
+      }),
+      object: objectProvider,
+    });
     await produceMaterial(routed, objectRequest, signal);
     expect(routed.tool).toBe("object-provider@1");
     await produceMaterial(routed, request, signal);

@@ -1,7 +1,12 @@
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { stat } from "node:fs/promises";
-import { z } from "zod";
+import {
+  FfprobeDocument,
+  fraction,
+  videoStream,
+  audioStream,
+} from "./ffprobe-qc.js";
 import type { CommandRunner } from "./process-runner.js";
 
 const ADMITTED_FPS = [24, 25, 30, 50, 60] as const;
@@ -15,36 +20,6 @@ const PIXEL_FORMATS = new Set([
   "yuv444p10le",
 ]);
 const TRANSFERS = new Set(["bt709", "iec61966-2-1"]);
-
-const Probe = z.object({
-  format: z.object({
-    duration: z.string(),
-    size: z.string(),
-    format_name: z.string(),
-  }),
-  streams: z.array(
-    z
-      .object({
-        index: z.number().int(),
-        codec_type: z.string(),
-        codec_name: z.string().optional(),
-        pix_fmt: z.string().optional(),
-        width: z.number().int().optional(),
-        height: z.number().int().optional(),
-        avg_frame_rate: z.string().optional(),
-        r_frame_rate: z.string().optional(),
-        start_time: z.string().optional(),
-        color_transfer: z.string().optional(),
-        channels: z.number().int().optional(),
-        sample_rate: z.string().optional(),
-        tags: z.object({ rotate: z.string().optional() }).default({}),
-      })
-      .passthrough(),
-  ),
-});
-const FrameProbe = z.object({
-  streams: z.array(z.object({ nb_read_frames: z.string() }).passthrough()),
-});
 
 export type NormalizationRequest = Readonly<{
   inputPath: string;
@@ -62,11 +37,6 @@ export type NormalizedMedia = Readonly<{
   fps: (typeof ADMITTED_FPS)[number];
   frameCount: number;
 }>;
-
-const rate = (value: string | undefined): number => {
-  const [numerator, denominator] = (value ?? "").split("/").map(Number);
-  return numerator && denominator ? numerator / denominator : Number.NaN;
-};
 
 const rotationFilter = (value: string | undefined): string | null => {
   const normalized = ((Number(value ?? 0) % 360) + 360) % 360;
@@ -100,18 +70,22 @@ export async function normalizeMedia(
     ],
     { cwd: request.workspace, signal: request.signal },
   );
-  const parsed = Probe.safeParse(JSON.parse(probeResult.stdout));
-  if (!parsed.success) throw new Error("MEDIA_PROBE_INVALID");
-  const video = parsed.data.streams.find(
-    (stream) => stream.codec_type === "video",
-  );
-  const audio = parsed.data.streams.find(
-    (stream) => stream.codec_type === "audio",
-  );
-  const duration = Number(parsed.data.format.duration);
-  const size = Number(parsed.data.format.size);
-  const fps = rate(video?.avg_frame_rate);
-  const realRate = rate(video?.r_frame_rate);
+  const parsed = FfprobeDocument.safeParse(JSON.parse(probeResult.stdout));
+  const format = parsed.success ? parsed.data.format : undefined;
+  if (
+    !parsed.success ||
+    format?.duration === undefined ||
+    format.size === undefined ||
+    format.format_name === undefined ||
+    parsed.data.streams.some((stream) => stream.index === undefined)
+  )
+    throw new Error("MEDIA_PROBE_INVALID");
+  const video = videoStream(parsed.data);
+  const audio = audioStream(parsed.data);
+  const duration = Number(format.duration);
+  const size = Number(format.size);
+  const fps = fraction(video?.avg_frame_rate);
+  const realRate = fraction(video?.r_frame_rate);
   const transfer = video?.color_transfer;
   const rotation = rotationFilter(video?.tags.rotate);
   const rotated = rotation?.startsWith("transpose") ?? false;
@@ -121,7 +95,7 @@ export async function normalizeMedia(
   const shortSide = Math.min(width ?? 0, height ?? 0);
   if (
     !video ||
-    !parsed.data.format.format_name.includes("mp4") ||
+    !format.format_name.includes("mp4") ||
     !VIDEO_CODECS.has(video.codec_name ?? "") ||
     !PIXEL_FORMATS.has(video.pix_fmt ?? "") ||
     (transfer !== undefined && !TRANSFERS.has(transfer)) ||
@@ -204,7 +178,9 @@ export async function normalizeMedia(
     ],
     { cwd: request.workspace, signal: request.signal },
   );
-  const frameProbe = FrameProbe.safeParse(JSON.parse(frameProbeResult.stdout));
+  const frameProbe = FfprobeDocument.safeParse(
+    JSON.parse(frameProbeResult.stdout),
+  );
   if (
     !frameProbe.success ||
     Number(frameProbe.data.streams[0]?.nb_read_frames) !== request.frameCount

@@ -1,8 +1,7 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import {
   copyFile,
   mkdir,
-  readFile,
   readdir,
   rename,
   rm,
@@ -11,6 +10,7 @@ import {
 } from "node:fs/promises";
 import { join } from "node:path";
 import { canonicalJson } from "./contracts/index.js";
+import { fileSha256 } from "./file-sha256.js";
 import {
   preparePartialRender,
   type CachedManifest,
@@ -21,11 +21,6 @@ export { preparePartialRender, type PartialRenderPlan };
 
 const MAX_FRAME_BYTES = 32 * 1024 * 1024;
 const MAX_CACHE_BYTES = 2 * 1024 * 1024 * 1024;
-
-const hashFile = async (path: string): Promise<string> =>
-  createHash("sha256")
-    .update(await readFile(path))
-    .digest("hex");
 
 export async function materializePartialFrames(
   plan: PartialRenderPlan,
@@ -47,7 +42,7 @@ export async function materializePartialFrames(
     const reused = plan.reusedFrames.get(frame);
     const source = captured.get(frame) ?? reused?.path;
     if (!source) throw new Error("PARTIAL_RENDER_FRAME_MISSING");
-    const hash = await hashFile(source);
+    const hash = await fileSha256(source);
     if (reused && hash !== reused.sha256)
       throw new Error("PARTIAL_RENDER_FRAME_HASH_MISMATCH");
     await copyFile(
@@ -81,7 +76,7 @@ export async function commitPartialRender(
       !frameStat.isFile() ||
       frameStat.size > MAX_FRAME_BYTES ||
       totalBytes > MAX_CACHE_BYTES ||
-      (await hashFile(source)) !== hash
+      (await fileSha256(source)) !== hash
     )
       throw new Error("PARTIAL_RENDER_CACHE_RESOURCE_INVALID");
     await copyFile(source, join(framesDirectory, `${hash}.png`));

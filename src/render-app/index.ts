@@ -35,12 +35,23 @@ export class RenderAppError extends Error {
   }
 }
 
-const escapeXml = (value: string): string =>
+export const escapeXml = (value: string): string =>
   value
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;");
+
+export const localFontRejection = (
+  font: LocalFont,
+): "LOCAL_FONT_PATH_INVALID" | "REMOTE_FONT_URL_REJECTED" | null => {
+  if (font.family.trim().length === 0 || font.path.trim().length === 0)
+    return "LOCAL_FONT_PATH_INVALID";
+  if (/^(https?:)?\/\//.test(font.path)) return "REMOTE_FONT_URL_REJECTED";
+  if (!/\.(woff2?|ttf|otf)$/i.test(font.path) || /[?#]/.test(font.path))
+    return "LOCAL_FONT_PATH_INVALID";
+  return null;
+};
 const frameValue = (value: unknown): number | undefined =>
   typeof value === "number" ? value : undefined;
 
@@ -136,12 +147,8 @@ function validateInput(input: RenderInput): void {
   )
     throw new RenderAppError("RENDER_DIGEST_MISMATCH");
   for (const font of input.localFonts) {
-    if (font.family.trim().length === 0 || font.path.trim().length === 0)
-      throw new RenderAppError("LOCAL_FONT_PATH_INVALID");
-    if (/^(https?:)?\/\//.test(font.path))
-      throw new RenderAppError("REMOTE_FONT_URL_REJECTED");
-    if (!/\.(woff2?|ttf|otf)$/i.test(font.path) || /[?#]/.test(font.path))
-      throw new RenderAppError("LOCAL_FONT_PATH_INVALID");
+    const rejected = localFontRejection(font);
+    if (rejected) throw new RenderAppError(rejected);
   }
   const owners = new Set(input.owners.map((owner) => owner.ownerId));
   for (const track of input.scene.tracks)

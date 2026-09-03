@@ -1,29 +1,23 @@
 import { spawn } from "node:child_process";
 import { resolve } from "node:path";
+import { parseArgs as parseNodeArgs } from "node:util";
 
 export const root = resolve(import.meta.dirname, "..");
 
 export function parseArgs(argv) {
-  const result = {};
-  for (let index = 0; index < argv.length; index += 1) {
-    const arg = argv[index];
-    if (!arg.startsWith("--")) continue;
-    const [key, inline] = arg.slice(2).split("=");
-    // A bare flag is followed by another flag or by nothing; only consume
-    // the next token as a value when it is not itself a flag.
-    const next = argv[index + 1];
-    if (inline !== undefined) {
-      result[key] = inline;
-      continue;
-    }
-    if (next === undefined || next.startsWith("--")) {
-      result[key] = true;
-      continue;
-    }
-    result[key] = next;
-    index += 1;
-  }
-  return result;
+  const { values } = parseNodeArgs({
+    args: argv,
+    options: {
+      host: { type: "string" },
+      models: { type: "string" },
+      only: { type: "string" },
+      "no-gpu": { type: "boolean" },
+      "no-build": { type: "boolean" },
+    },
+    strict: true,
+    allowPositionals: false,
+  });
+  return values;
 }
 
 export function assert(condition, token) {

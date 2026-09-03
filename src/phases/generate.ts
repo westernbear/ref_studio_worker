@@ -54,19 +54,17 @@ export const runGeneratePhase = async (input: {
             destinationPath,
             transfer,
           ),
-        ...(dependencies.materialProvider
-          ? { provider: dependencies.materialProvider }
-          : dependencies.materialProviderFactory
-            ? {
-                provider: dependencies.materialProviderFactory(
-                  job.jobId,
-                  payload.materialEndpoints ?? {
-                    video: null,
-                    model3d: null,
-                  },
-                ),
-              }
-            : {}),
+        ...(dependencies.materialProviderFactory
+          ? {
+              provider: dependencies.materialProviderFactory(
+                job.jobId,
+                payload.materialEndpoints ?? {
+                  video: null,
+                  model3d: null,
+                },
+              ),
+            }
+          : {}),
       },
     );
     const assets = [];

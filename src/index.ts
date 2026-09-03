@@ -1,6 +1,5 @@
 import { fileURLToPath } from "node:url";
-import { restrictToForm, restrictToKind } from "./material-provider.js";
-import { createRemoteImageMaterialProvider } from "./remote-image-material-provider.js";
+import { createMaterialProvider } from "./material-provider.js";
 import { createSelfHosted3DMaterialProvider } from "./self-hosted-3d-material-provider.js";
 import { createSelfHostedVideoMaterialProvider } from "./self-hosted-video-material-provider.js";
 import { createWorkerApi, type Fetcher } from "./worker-api.js";
@@ -25,25 +24,19 @@ export const createWorkerRuntime = (
       // Hi3DGen+Blender. Video: self-hosted wan-alpha. Unset endpoints refuse
       // that kind by name. Console payload first, env as host pin / fallback.
       materialProviderFactory: (jobId, endpoints) =>
-        restrictToKind(
-          "image",
-          restrictToForm(
-            "object",
-            createSelfHosted3DMaterialProvider({
-              baseUrl: endpoints.model3d ?? config.hi3dgenBaseUrl,
-              ...(config.blenderCapability !== undefined
-                ? { capability: config.blenderCapability }
-                : {}),
-            }),
-            createRemoteImageMaterialProvider(api, jobId),
-          ),
-          restrictToKind(
-            "video",
-            createSelfHostedVideoMaterialProvider({
-              baseUrl: endpoints.video ?? config.wanAlphaBaseUrl,
-            }),
-          ),
-        ),
+        createMaterialProvider({
+          requestImage: (request, signal) =>
+            api.requestMaterial(jobId, request, signal),
+          object: createSelfHosted3DMaterialProvider({
+            baseUrl: endpoints.model3d ?? config.hi3dgenBaseUrl,
+            ...(config.blenderCapability !== undefined
+              ? { capability: config.blenderCapability }
+              : {}),
+          }),
+          video: createSelfHostedVideoMaterialProvider({
+            baseUrl: endpoints.video ?? config.wanAlphaBaseUrl,
+          }),
+        }),
     }),
   };
 };

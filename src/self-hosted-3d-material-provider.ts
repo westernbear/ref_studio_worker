@@ -13,6 +13,7 @@ import {
   MaterialGenerationError,
   type MaterialProvider,
 } from "./material-provider.js";
+import { postGenerate } from "./post-generate.js";
 import { runCommand, type CommandRunner } from "./process-runner.js";
 
 // The worker's other new self-hosted provider: Hi3DGen (chosen, per the
@@ -39,8 +40,9 @@ import { runCommand, type CommandRunner } from "./process-runner.js";
 //
 // Which of the two answers a given `image` request is now a per-asset
 // decision the scene makes: SpecAsset's `form` field ("flat" or
-// "object"), routed by restrictToForm in index.ts. An object-form asset
-// comes here; everything else goes to the OpenAI relay, exactly as before.
+// "object"), routed by createMaterialProvider in index.ts. An object-form
+// asset comes here; everything else goes to the OpenAI relay, exactly as
+// before.
 // Leaving RVS_HI3DGEN_BASE_URL unset keeps that relay path completely
 // unchanged and makes an object-form asset fail by name below, rather than
 // silently getting a flat picture of something the scene asked to be a
@@ -73,33 +75,6 @@ export const HI3DGEN_BLENDER_TOOL = "hi3dgen+blender-cycles-cpu-spp128@1";
 // choices are principled, not confirmed; see the implementation report.
 export const BLENDER_SAMPLES = 128;
 
-// The self-hosted service's own HTTP contract, as documented to me --
-// nothing here has been exercised against a running Hi3DGen instance.
-// Isolated behind this one injectable function, same shape as the video
-// provider's WanAlphaClient. Returns raw, untextured mesh bytes (assumed
-// glTF binary -- a format Blender's own importer reads natively).
-export type Hi3DGenClient = (
-  baseUrl: string,
-  request: Readonly<{ prompt: string; seed: number }>,
-  signal: AbortSignal,
-) => Promise<Uint8Array>;
-
-const defaultHi3DGenClient: Hi3DGenClient = async (
-  baseUrl,
-  request,
-  signal,
-) => {
-  const response = await fetch(`${baseUrl.replace(/\/+$/u, "")}/v1/generate`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ prompt: request.prompt, seed: request.seed }),
-    signal,
-  });
-  if (!response.ok)
-    throw new Error(`HI3DGEN_REQUEST_FAILED:${response.status}`);
-  return new Uint8Array(await response.arrayBuffer());
-};
-
 export type SelfHosted3DMaterialProviderConfig = Readonly<{
   // Undefined means "not configured" -- generate() then refuses by name,
   // the same fail-closed stance unavailableMaterialProvider takes.
@@ -107,7 +82,6 @@ export type SelfHosted3DMaterialProviderConfig = Readonly<{
   capability?: BlenderCapabilitySnapshot;
   containerRuntimePath?: string;
   runCommand?: CommandRunner;
-  client?: Hi3DGenClient;
 }>;
 
 // A single, static script -- every run-specific value (mesh path, output
@@ -346,7 +320,6 @@ export function createSelfHosted3DMaterialProvider(
 ): MaterialProvider {
   const baseUrl = config.baseUrl;
   const containerRuntimePath = config.containerRuntimePath ?? "docker";
-  const client = config.client ?? defaultHi3DGenClient;
   const run = config.runCommand ?? runCommand;
   return {
     tool: HI3DGEN_BLENDER_TOOL,
@@ -360,10 +333,11 @@ export function createSelfHosted3DMaterialProvider(
       const capability = parseBlenderCapability(config.capability);
       const seed =
         request.seed ?? deriveMaterialSeed(request.assetId, request.prompt);
-      const mesh = await client(
+      const mesh = await postGenerate(
         baseUrl,
         { prompt: request.prompt, seed },
         signal,
+        "HI3DGEN_REQUEST_FAILED",
       );
       const render = await renderGlbWithBlender(mesh, {
         width: request.canvas.width,

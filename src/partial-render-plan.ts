@@ -1,8 +1,8 @@
-import { createHash } from "node:crypto";
 import { lstat, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { z } from "zod";
 import { sha256Hex, type SceneSpec } from "./contracts/index.js";
+import { fileSha256 } from "./file-sha256.js";
 import {
   buildBeatDependencies,
   type BeatDependency,
@@ -56,11 +56,6 @@ export type PartialRenderPlan = Readonly<{
   renderedBeatIds: readonly string[];
   reusedBeatIds: readonly string[];
 }>;
-
-const hashFile = async (path: string): Promise<string> =>
-  createHash("sha256")
-    .update(await readFile(path))
-    .digest("hex");
 
 type PlanBase = Omit<
   PartialRenderPlan,
@@ -194,7 +189,7 @@ export async function preparePartialRender(
         totalBytes += stat.size;
         if (
           totalBytes > MAX_CACHE_BYTES ||
-          (await hashFile(path)) !== frame.sha256
+          (await fileSha256(path)) !== frame.sha256
         )
           throw new Error("CACHE_FRAME_STALE");
         if (reusedFrames.has(frame.frame))

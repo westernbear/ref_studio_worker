@@ -11,7 +11,7 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { z } from "zod";
 import { terminateProcess } from "./process-runner.js";
 
@@ -78,23 +78,10 @@ export type CompilerGuards = Readonly<{
   expectedDeletionEpoch: number;
   expectedRestoreEpoch: number;
 }>;
-export type Spawned = Readonly<{
-  stdout: NodeJS.ReadableStream;
-  stderr: NodeJS.ReadableStream;
-  kill: (signal?: NodeJS.Signals) => boolean;
-  on: (event: string, listener: (...args: readonly unknown[]) => void) => void;
-  pid: number | undefined;
-}>;
-export type ProcessFactory = (
-  command: string,
-  args: readonly string[],
-  options: Readonly<{ cwd: string; env: Readonly<NodeJS.ProcessEnv> }>,
-) => Spawned;
 export type OrchestratorOptions = Readonly<{
   python: string;
   compilerArgs: readonly string[];
   stageCeilings?: StageCeilings;
-  spawn?: ProcessFactory;
   now?: () => number;
   rssGib?: (pid: number | undefined) => number;
   networkAllowed?: boolean;
@@ -125,23 +112,6 @@ export class CompilerOrchestratorError extends Error {
 }
 const safeError = (token: string): CompilerOrchestratorError =>
   new CompilerOrchestratorError(token);
-const defaultSpawn: ProcessFactory = (command, args, options) => {
-  const child = spawn(command, [...args], {
-    cwd: options.cwd,
-    env: { ...options.env },
-    stdio: ["ignore", "pipe", "pipe"],
-    detached: process.platform !== "win32",
-  });
-  return {
-    stdout: child.stdout,
-    stderr: child.stderr,
-    kill: (signal?: NodeJS.Signals) => child.kill(signal),
-    pid: child.pid ?? undefined,
-    on: (event, listener) => {
-      child.on(event, (...args: unknown[]) => listener(...args));
-    },
-  };
-};
 const within = (root: string, candidate: string): boolean => {
   const r = relative(resolve(root), resolve(candidate));
   return r === "" || (!r.startsWith("..") && !isAbsolute(r));
@@ -166,7 +136,6 @@ export class CompilerOrchestrator {
     readonly python: string;
     readonly compilerArgs: readonly string[];
     readonly stageCeilings: StageCeilings;
-    readonly spawn: ProcessFactory;
     readonly now: () => number;
     readonly rssGib: (pid: number | undefined) => number;
     readonly networkAllowed: boolean;
@@ -176,7 +145,6 @@ export class CompilerOrchestrator {
       python: options.python,
       compilerArgs: options.compilerArgs,
       stageCeilings: options.stageCeilings ?? DEFAULT_STAGE_CEILINGS,
-      spawn: options.spawn ?? defaultSpawn,
       now: options.now ?? Date.now,
       rssGib: options.rssGib ?? processRssGib,
       networkAllowed: options.networkAllowed ?? false,
@@ -242,9 +210,9 @@ export class CompilerOrchestrator {
       });
       await writeFile(inputPath, JSON.stringify(input), { mode: 0o600 });
       if (request.signal?.aborted) throw safeError("COMPILER_CANCELLED");
-      let child: Spawned;
+      let child: ChildProcess;
       try {
-        child = this.#options.spawn(
+        child = spawn(
           this.#options.python,
           [...this.#options.compilerArgs, inputPath, outputPath],
           {
@@ -254,11 +222,17 @@ export class CompilerOrchestrator {
               RVS_NO_NETWORK: "1",
               RVS_TENANT_ROOT: request.leaseRoot,
             },
+            stdio: ["ignore", "pipe", "pipe"],
+            detached: process.platform !== "win32",
           },
         );
       } catch {
         throw safeError("COMPILER_SPAWN_FAILED");
       }
+      if (child.stdout === null || child.stderr === null)
+        throw safeError("COMPILER_SPAWN_FAILED");
+      const stdoutStream = child.stdout;
+      const stderrStream = child.stderr;
       let stdout = "";
       let stderr = "";
       let progressBuffer = "";
@@ -292,12 +266,12 @@ export class CompilerOrchestrator {
         () => stopFor("COMPILER_DEADLINE"),
         this.#options.stageCeilings.preflight * 1000,
       );
-      child.stdout.on("data", (chunk: unknown) => {
+      stdoutStream.on("data", (chunk: unknown) => {
         if (typeof chunk === "string" || Buffer.isBuffer(chunk))
           stdout += chunk.toString();
       });
       let progressReports = Promise.resolve();
-      child.stderr.on("data", (chunk: unknown) => {
+      stderrStream.on("data", (chunk: unknown) => {
         if (typeof chunk !== "string" && !Buffer.isBuffer(chunk)) return;
         const text = chunk.toString();
         stderr += text;

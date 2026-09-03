@@ -84,11 +84,9 @@ describe("compileSceneSpec", () => {
   });
 
   // I3: apps/api/src/workers.ts stores job.sceneSpecDigest using
-  // @rvs/contracts's sha256Hex (canonical-json based); this compiler
-  // reports its own digest with a locally-duplicated canonicalJson (see
-  // this file's comment on SpecCompilation). Both must agree for the same
-  // spec, or a stored digest could never match a rendered one once the
-  // generate-render batch compares them.
+  // @rvs/contracts's sha256Hex (canonical-json based). Both must agree for
+  // the same spec, or a stored digest could never match a rendered one
+  // once the generate-render batch compares them.
   it("agrees with @rvs/contracts's shared canonical-json digest for the same spec", () => {
     expect(compileSceneSpec(fixtureSpec).digest).toBe(sha256Hex(fixtureSpec));
   });

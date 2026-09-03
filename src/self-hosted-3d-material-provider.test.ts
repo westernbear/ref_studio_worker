@@ -1,14 +1,13 @@
 import { createHash } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   BLENDER_SAMPLES,
   buildBlenderScript,
   canonicalizeBlenderPng,
   createSelfHosted3DMaterialProvider,
   HI3DGEN_BLENDER_TOOL,
-  type Hi3DGenClient,
   renderGlbWithBlender,
 } from "./self-hosted-3d-material-provider.js";
 import { deriveMaterialSeed } from "./material-seed.js";
@@ -21,11 +20,17 @@ const request: MaterialRequest = {
   kind: "image",
   prompt: "a faceted glass paperweight",
   seed: null,
-  // The only form that routes here -- see restrictToForm in index.ts.
+  // The only form that routes here -- see createMaterialProvider in index.ts.
   form: "object",
   canvas: { width: 96, height: 64, fps: 30, frameCount: 90 },
 };
 const signal = new AbortController().signal;
+
+const stubFetch = (body: Uint8Array, status = 200) => {
+  const fetchMock = vi.fn(async () => new Response(body, { status }));
+  vi.stubGlobal("fetch", fetchMock);
+  return fetchMock;
+};
 const capability = {
   imageDigest: REGISTERED_BLENDER.imageDigest,
   version: REGISTERED_BLENDER.version,
@@ -127,6 +132,8 @@ describe("buildBlenderScript", () => {
 });
 
 describe("createSelfHosted3DMaterialProvider", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
   it("refuses by name when RVS_HI3DGEN_BASE_URL is not configured", async () => {
     const provider = createSelfHosted3DMaterialProvider({ baseUrl: undefined });
     await expect(produceMaterial(provider, request, signal)).rejects.toThrow(
@@ -138,26 +145,18 @@ describe("createSelfHosted3DMaterialProvider", () => {
   });
 
   it("fails closed before mesh generation when the Blender capability is absent", async () => {
-    let generated = false;
+    const fetchMock = stubFetch(buildGlb());
     const provider = createSelfHosted3DMaterialProvider({
       baseUrl: "http://hi3dgen.worker-internal:8000",
-      client: async () => {
-        generated = true;
-        return buildGlb();
-      },
     });
     await expect(produceMaterial(provider, request, signal)).rejects.toThrow(
       /BLENDER_CAPABILITY_UNAVAILABLE/u,
     );
-    expect(generated).toBe(false);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("derives a seed, renders at the scene's canvas size and returns image/png provenance", async () => {
-    const clientCalls: Array<{ prompt: string; seed: number }> = [];
-    const client: Hi3DGenClient = async (baseUrl, req) => {
-      clientCalls.push(req);
-      return buildGlb();
-    };
+    const fetchMock = stubFetch(buildGlb());
     let sawSeed: number | undefined;
     const run = fakeBlender(async (argsPath) => {
       const cfg = JSON.parse(await readFile(argsPath, "utf8")) as {
@@ -171,14 +170,15 @@ describe("createSelfHosted3DMaterialProvider", () => {
     const provider = createSelfHosted3DMaterialProvider({
       baseUrl: "http://hi3dgen.worker-internal:8000",
       capability,
-      client,
       runCommand: run,
     });
 
     const material = await produceMaterial(provider, request, signal);
 
     const expectedSeed = deriveMaterialSeed(request.assetId, request.prompt);
-    expect(clientCalls[0]?.seed).toBe(expectedSeed);
+    expect(
+      JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body)).seed,
+    ).toBe(expectedSeed);
     expect(sawSeed).toBe(expectedSeed);
     expect(material.contentType).toBe("image/png");
     expect(material.provenance.tool).toBe(HI3DGEN_BLENDER_TOOL);
@@ -189,7 +189,7 @@ describe("createSelfHosted3DMaterialProvider", () => {
   });
 
   it("uses the scene's own seed instead of deriving one when the scene names one", async () => {
-    const client: Hi3DGenClient = async () => buildGlb();
+    stubFetch(buildGlb());
     let sawSeed: number | undefined;
     const run = fakeBlender(async (argsPath) => {
       const cfg = JSON.parse(await readFile(argsPath, "utf8")) as {
@@ -203,7 +203,6 @@ describe("createSelfHosted3DMaterialProvider", () => {
     const provider = createSelfHosted3DMaterialProvider({
       baseUrl: "http://hi3dgen.worker-internal:8000",
       capability,
-      client,
       runCommand: run,
     });
 
@@ -218,7 +217,7 @@ describe("createSelfHosted3DMaterialProvider", () => {
   });
 
   it("uses the configured sample count, defaulting to BLENDER_SAMPLES", async () => {
-    const client: Hi3DGenClient = async () => buildGlb();
+    stubFetch(buildGlb());
     let sawSamples: number | undefined;
     const run = fakeBlender(async (argsPath) => {
       const cfg = JSON.parse(await readFile(argsPath, "utf8")) as {
@@ -232,7 +231,6 @@ describe("createSelfHosted3DMaterialProvider", () => {
     const provider = createSelfHosted3DMaterialProvider({
       baseUrl: "http://hi3dgen.worker-internal:8000",
       capability,
-      client,
       runCommand: run,
     });
 
@@ -242,12 +240,11 @@ describe("createSelfHosted3DMaterialProvider", () => {
   });
 
   it("rejects a render whose dimensions don't match the scene's canvas", async () => {
-    const client: Hi3DGenClient = async () => buildGlb();
+    stubFetch(buildGlb());
     const run = fakeBlender(buildFakePng(1, 1));
     const provider = createSelfHosted3DMaterialProvider({
       baseUrl: "http://hi3dgen.worker-internal:8000",
       capability,
-      client,
       runCommand: run,
     });
 
@@ -257,7 +254,7 @@ describe("createSelfHosted3DMaterialProvider", () => {
   });
 
   it("rejects a render with no alpha channel", async () => {
-    const client: Hi3DGenClient = async () => buildGlb();
+    stubFetch(buildGlb());
     // colorType 2 = truecolour, no alpha.
     const run = fakeBlender(
       buildFakePng(request.canvas.width, request.canvas.height, 2),
@@ -265,7 +262,6 @@ describe("createSelfHosted3DMaterialProvider", () => {
     const provider = createSelfHosted3DMaterialProvider({
       baseUrl: "http://hi3dgen.worker-internal:8000",
       capability,
-      client,
       runCommand: run,
     });
 
@@ -275,13 +271,10 @@ describe("createSelfHosted3DMaterialProvider", () => {
   });
 
   it("propagates a client failure without inventing a placeholder", async () => {
-    const client: Hi3DGenClient = async () => {
-      throw new Error("HI3DGEN_REQUEST_FAILED:503");
-    };
+    stubFetch(new Uint8Array(), 503);
     const provider = createSelfHosted3DMaterialProvider({
       baseUrl: "http://hi3dgen.worker-internal:8000",
       capability,
-      client,
     });
 
     await expect(produceMaterial(provider, request, signal)).rejects.toThrow(

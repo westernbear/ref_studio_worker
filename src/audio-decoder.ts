@@ -1,26 +1,9 @@
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { isAbsolute, relative, resolve } from "node:path";
-import { z } from "zod";
 import type { SceneSpec, SpecAsset } from "./contracts/index.js";
+import { audioStream, parseFfprobeJson } from "./ffprobe-qc.js";
 import type { CommandRunner } from "./process-runner.js";
-
-const AudioProbe = z
-  .object({
-    format: z.object({ duration: z.string() }).passthrough(),
-    streams: z.array(
-      z
-        .object({
-          codec_type: z.string(),
-          codec_name: z.string(),
-          profile: z.string().optional(),
-          channels: z.number().int().positive().optional(),
-          sample_rate: z.string().optional(),
-        })
-        .passthrough(),
-    ),
-  })
-  .passthrough();
 
 export type ValidatedAudio = Readonly<{
   path: string;
@@ -90,24 +73,25 @@ export async function validateAudioAsset(
     ],
     { cwd: input.workspace, signal: input.signal },
   );
-  let parsed: z.infer<typeof AudioProbe>;
+  let parsed;
   try {
-    parsed = AudioProbe.parse(JSON.parse(result.stdout));
+    parsed = parseFfprobeJson(result.stdout);
   } catch {
     return fail();
   }
-  const audio = parsed.streams.filter(
-    (stream) => stream.codec_type === "audio",
-  );
-  const durationSeconds = Number(parsed.format.duration);
+  const audio = audioStream(parsed);
+  const durationSeconds = Number(parsed.format?.duration);
   const targetSeconds = input.canvas.frameCount / input.canvas.fps;
   if (
+    parsed.format?.duration === undefined ||
     parsed.streams.some((stream) => stream.codec_type === "video") ||
-    audio.length !== 1 ||
-    audio[0]?.codec_name !== "aac" ||
-    audio[0]?.profile !== "LC" ||
-    audio[0]?.sample_rate !== "48000" ||
-    audio[0]?.channels !== 2 ||
+    parsed.streams.filter((stream) => stream.codec_type === "audio").length !==
+      1 ||
+    audio === undefined ||
+    audio.codec_name !== "aac" ||
+    audio.profile !== "LC" ||
+    audio.sample_rate !== "48000" ||
+    audio.channels !== 2 ||
     !Number.isFinite(durationSeconds) ||
     durationSeconds <= 0 ||
     (policy.durationPolicy === "reject" &&

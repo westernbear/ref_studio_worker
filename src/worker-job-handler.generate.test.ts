@@ -291,7 +291,7 @@ describe("the assets worker phase", () => {
     };
     const handler = createWorkflowJobHandler({
       api: fake,
-      materialProvider: provider,
+      materialProviderFactory: () => provider,
     } as unknown as WorkflowPipelineDependencies);
     const generated = spec(
       [
@@ -347,7 +347,7 @@ describe("the assets worker phase", () => {
     };
     const handler = createWorkflowJobHandler({
       api: fake,
-      materialProvider: provider,
+      materialProviderFactory: () => provider,
       materialDeadlineMs: 20,
     } as unknown as WorkflowPipelineDependencies);
     const generated = spec(

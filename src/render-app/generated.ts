@@ -6,7 +6,7 @@ import {
   type SpecTextWeight,
 } from "../contracts/index.js";
 import type { FramePlan, SpecCompilation } from "../scene/spec-compile.js";
-import type { LocalFont, RenderedFrame } from "./index.js";
+import { escapeXml, localFontRejection, type LocalFont, type RenderedFrame } from "./index.js";
 
 // Draws a compiled generated scene (Task 2.3's SpecCompilation) one frame at
 // a time. Pure string emitter -- no browser API -- mirroring the shape of
@@ -21,26 +21,10 @@ export class GeneratedRenderAppError extends Error {
   }
 }
 
-// Copied from ./index.ts (escapeXml is not exported there) -- see the
-// render-app/index.ts docstring at the top of this file's sibling module.
-const escapeXml = (value: string): string =>
-  value
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;");
-
-// Local-font-only policy, mirroring render-app/index.ts:139-146. A generated
-// scene never sees a browser-facing URL for a font.
 function validateLocalFonts(localFonts: readonly LocalFont[]): void {
-  for (const font of localFonts) {
-    if (font.family.trim().length === 0 || font.path.trim().length === 0)
+  for (const font of localFonts)
+    if (localFontRejection(font) !== null)
       throw new GeneratedRenderAppError("NONLOCAL_FONT");
-    if (/^(https?:)?\/\//.test(font.path))
-      throw new GeneratedRenderAppError("NONLOCAL_FONT");
-    if (!/\.(woff2?|ttf|otf)$/i.test(font.path) || /[?#]/.test(font.path))
-      throw new GeneratedRenderAppError("NONLOCAL_FONT");
-  }
 }
 
 // Same remote-rejection shape as validateLocalFonts above: assetPaths only

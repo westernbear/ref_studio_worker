@@ -12,11 +12,6 @@ import { pathToFileURL } from "node:url";
 import type { SceneSpec } from "./contracts/index.js";
 import type { RenderedFrame } from "./render-app/index.js";
 import { REGISTERED_RUNTIME_DIGEST } from "./runtime-snapshot.js";
-export {
-  applyNativeInteraction,
-  createNativeInteractionModel,
-  parseNativeInteractionEvent,
-} from "./scene-interactions.js";
 import { createNativeInteractionModel } from "./scene-interactions.js";
 
 type NativeScenePackageInput = Readonly<{

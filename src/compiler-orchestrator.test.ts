@@ -1,13 +1,18 @@
+import { spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { unlink } from "node:fs/promises";
 import { PassThrough } from "node:stream";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   CompilerOrchestrator,
   type CompileRequest,
-  type ProcessFactory,
-  type Spawned,
 } from "./compiler-orchestrator.js";
+
+vi.mock("node:child_process", () => ({
+  spawn: vi.fn(),
+}));
+
+const mockedSpawn = vi.mocked(spawn);
 
 const bundle = {
   measurements: [
@@ -43,7 +48,7 @@ function request(overrides: Partial<CompileRequest> = {}): CompileRequest {
     ...overrides,
   };
 }
-class FakeChild extends EventEmitter implements Spawned {
+class FakeChild extends EventEmitter {
   readonly stdout = new PassThrough();
   readonly stderr = new PassThrough();
   readonly pid = 42;
@@ -54,9 +59,13 @@ class FakeChild extends EventEmitter implements Spawned {
     return true;
   }
 }
-function factory(output: unknown, code = 0, delay = 0): ProcessFactory {
-  return (_command, _args, _options) => {
+
+let lastChild: FakeChild | undefined;
+
+function stubSpawn(output: unknown, code = 0, delay = 0): void {
+  mockedSpawn.mockImplementation(() => {
     const child = new FakeChild();
+    lastChild = child;
     queueMicrotask(() => {
       child.stderr.emit(
         "data",
@@ -65,9 +74,10 @@ function factory(output: unknown, code = 0, delay = 0): ProcessFactory {
       child.stdout.emit("data", JSON.stringify(output));
       setTimeout(() => child.emit("close", code), delay);
     });
-    return child;
-  };
+    return child as never;
+  });
 }
+
 const validOutput = {
   protocol: "rvs.compiler.v1",
   kind: "evidence",
@@ -86,52 +96,57 @@ async function expectNoPublication(
 }
 
 describe("compiler orchestrator", () => {
+  afterEach(() => {
+    mockedSpawn.mockReset();
+    lastChild = undefined;
+  });
+
   it("publishes a validated 100-frame evidence bundle", async () => {
+    stubSpawn(validOutput);
     const fixture = request();
     const result = await new CompilerOrchestrator({
       python: "python",
       compilerArgs: [],
-      spawn: factory(validOutput),
     }).compile(fixture);
     expect(result.kind).toBe("evidence");
     await unlink(`/tmp/rvs-tenant/${fixture.attemptId}.evidence.json`);
   });
   it("publishes no evidence for protocol, model, and crash failures", async () => {
     const corrupt = request();
+    stubSpawn({ nope: true });
     await expectNoPublication(
       new CompilerOrchestrator({
         python: "python",
         compilerArgs: [],
-        spawn: factory({ nope: true }),
       }).compile(corrupt),
       corrupt.attemptId,
     );
     const missingModel = request({
       modelManifest: { name: "", version: "", digest: "bad" },
     });
+    stubSpawn(validOutput, 1);
     await expectNoPublication(
       new CompilerOrchestrator({
         python: "python",
         compilerArgs: [],
-        spawn: factory(validOutput, 1),
       }).compile(missingModel),
       missingModel.attemptId,
     );
     const crash = request();
+    stubSpawn(validOutput, 1);
     await expectNoPublication(
       new CompilerOrchestrator({
         python: "python",
         compilerArgs: [],
-        spawn: factory(validOutput, 1),
       }).compile(crash),
       crash.attemptId,
     );
   });
   it("rejects stale leases, epochs, network, and outside workspace without publication", async () => {
+    stubSpawn(validOutput);
     const options = {
       python: "python",
       compilerArgs: [],
-      spawn: factory(validOutput),
     };
     const stale = request({
       guards: { ...request().guards, lease: () => false },
@@ -155,11 +170,11 @@ describe("compiler orchestrator", () => {
   });
   it("enforces true deadline, RSS, cancellation, and concurrent admission", async () => {
     const timeout = request();
+    stubSpawn(validOutput, 0, 40);
     await expectNoPublication(
       new CompilerOrchestrator({
         python: "python",
         compilerArgs: [],
-        spawn: factory(validOutput, 0, 40),
         stageCeilings: {
           total: 1,
           preflight: 0.001,
@@ -172,11 +187,11 @@ describe("compiler orchestrator", () => {
       timeout.attemptId,
     );
     const rss = request();
+    stubSpawn(validOutput, 0, 20);
     await expectNoPublication(
       new CompilerOrchestrator({
         python: "python",
         compilerArgs: [],
-        spawn: factory(validOutput, 0, 20),
         rssGib: () => 13,
       }).compile(rss),
       rss.attemptId,
@@ -184,18 +199,18 @@ describe("compiler orchestrator", () => {
     const abort = new AbortController();
     abort.abort();
     const cancelled = request({ signal: abort.signal });
+    stubSpawn(validOutput);
     await expectNoPublication(
       new CompilerOrchestrator({
         python: "python",
         compilerArgs: [],
-        spawn: factory(validOutput),
       }).compile(cancelled),
       cancelled.attemptId,
     );
+    stubSpawn(validOutput, 0, 30);
     const active = new CompilerOrchestrator({
       python: "python",
       compilerArgs: [],
-      spawn: factory(validOutput, 0, 30),
     });
     const first = active.compile(request());
     await expect(active.compile(request())).rejects.toMatchObject({
@@ -204,6 +219,7 @@ describe("compiler orchestrator", () => {
     await first;
   });
   it("rechecks epochs after compile and reports progress stages", async () => {
+    stubSpawn(validOutput);
     const fixture = request();
     let stale = false;
     const progress: { stage: string; fraction: number }[] = [];
@@ -211,7 +227,6 @@ describe("compiler orchestrator", () => {
     const run = new CompilerOrchestrator({
       python: "python",
       compilerArgs: [],
-      spawn: factory(validOutput),
     }).compile({
       ...fixture,
       guards,
@@ -229,25 +244,12 @@ describe("compiler orchestrator", () => {
   });
 
   it("terminates the compiler and preserves a progress reporting error", async () => {
+    stubSpawn(validOutput, 0, 20);
     const fixture = request();
     const progressError = new Error("CANCEL_REQUESTED");
-    let child: FakeChild | undefined;
     const run = new CompilerOrchestrator({
       python: "python",
       compilerArgs: [],
-      spawn: () => {
-        const spawned = new FakeChild();
-        child = spawned;
-        queueMicrotask(() => {
-          spawned.stderr.emit(
-            "data",
-            `${JSON.stringify({ protocol: "rvs.compiler.v1", kind: "progress", stage: "preflight", fraction: 0.01 })}\n`,
-          );
-          spawned.stdout.emit("data", JSON.stringify(validOutput));
-          setTimeout(() => spawned.emit("close", 0), 20);
-        });
-        return spawned;
-      },
     }).compile({
       ...fixture,
       onProgress: (event) => {
@@ -260,7 +262,7 @@ describe("compiler orchestrator", () => {
 
     try {
       await expect(run).rejects.toBe(progressError);
-      expect(child?.kills).toEqual(["SIGTERM"]);
+      expect(lastChild?.kills).toEqual(["SIGTERM"]);
     } finally {
       await unlink(`/tmp/rvs-tenant/${fixture.attemptId}.evidence.json`).catch(
         () => undefined,
@@ -269,15 +271,16 @@ describe("compiler orchestrator", () => {
   });
 
   it("rejects a compiler spawn error", async () => {
+    mockedSpawn.mockImplementation(() => {
+      const child = new FakeChild();
+      lastChild = child;
+      queueMicrotask(() => child.emit("error", new Error("spawn ENOENT")));
+      return child as never;
+    });
     const fixture = request();
     const run = new CompilerOrchestrator({
       python: "missing-python",
       compilerArgs: [],
-      spawn: () => {
-        const child = new FakeChild();
-        queueMicrotask(() => child.emit("error", new Error("spawn ENOENT")));
-        return child;
-      },
     }).compile(fixture);
 
     await expect(run).rejects.toMatchObject({ token: "COMPILER_SPAWN_FAILED" });

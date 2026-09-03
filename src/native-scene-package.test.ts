@@ -13,12 +13,14 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { fixtureSpec } from "./contracts/index.js";
 import {
-  applyNativeInteraction,
   buildNativeScenePackage,
-  createNativeInteractionModel,
-  parseNativeInteractionEvent,
   verifyNativeScenePackage,
 } from "./native-scene-package.js";
+import {
+  applyNativeInteraction,
+  createNativeInteractionModel,
+  parseNativeInteractionEvent,
+} from "./scene-interactions.js";
 
 describe("native scene interactions", () => {
   it("creates typed deterministic pointer keyboard and focus bindings", () => {

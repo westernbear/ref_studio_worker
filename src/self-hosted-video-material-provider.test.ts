@@ -2,11 +2,10 @@ import { createHash } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createSelfHostedVideoMaterialProvider,
   WAN_ALPHA_TOOL,
-  type WanAlphaClient,
 } from "./self-hosted-video-material-provider.js";
 import { deriveMaterialSeed } from "./material-seed.js";
 import { produceMaterial, type MaterialRequest } from "./material-provider.js";
@@ -22,7 +21,15 @@ const request: MaterialRequest = {
 };
 const signal = new AbortController().signal;
 
+const stubFetch = (body: Uint8Array, status = 200) => {
+  const fetchMock = vi.fn(async () => new Response(body, { status }));
+  vi.stubGlobal("fetch", fetchMock);
+  return fetchMock;
+};
+
 describe("createSelfHostedVideoMaterialProvider", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
   it("refuses by name when RVS_WAN_ALPHA_BASE_URL is not configured", async () => {
     const provider = createSelfHostedVideoMaterialProvider({
       baseUrl: undefined,
@@ -36,11 +43,7 @@ describe("createSelfHostedVideoMaterialProvider", () => {
   });
 
   it("sends the derived seed to the client and records it in provenance", async () => {
-    const calls: Array<{ prompt: string; seed: number }> = [];
-    const client: WanAlphaClient = async (baseUrl, req) => {
-      calls.push(req);
-      return Uint8Array.from([9, 9, 9]);
-    };
+    const fetchMock = stubFetch(Uint8Array.from([9, 9, 9]));
     const run: CommandRunner = async (command, args) => {
       const outputPath = args.at(-1) as string;
       if (command.includes("ffprobe"))
@@ -65,15 +68,16 @@ describe("createSelfHostedVideoMaterialProvider", () => {
     };
     const provider = createSelfHostedVideoMaterialProvider({
       baseUrl: "http://wan-alpha.worker-internal:8000",
-      client,
       runCommand: run,
     });
 
     const material = await produceMaterial(provider, request, signal);
 
-    expect(calls).toHaveLength(1);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
     const expectedSeed = deriveMaterialSeed(request.assetId, request.prompt);
-    expect(calls[0]?.seed).toBe(expectedSeed);
+    expect(
+      JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body)).seed,
+    ).toBe(expectedSeed);
     expect(material.provenance.seed).toBe(expectedSeed);
     expect(material.provenance.tool).toBe(WAN_ALPHA_TOOL);
     expect(material.contentType).toBe("video/mp4");
@@ -85,11 +89,7 @@ describe("createSelfHostedVideoMaterialProvider", () => {
   });
 
   it("uses the scene's own seed instead of deriving one when the scene names one", async () => {
-    const calls: Array<{ seed: number }> = [];
-    const client: WanAlphaClient = async (baseUrl, req) => {
-      calls.push(req);
-      return Uint8Array.from([1]);
-    };
+    const fetchMock = stubFetch(Uint8Array.from([1]));
     const run: CommandRunner = async (command, args) => {
       const outputPath = args.at(-1) as string;
       if (command.includes("ffprobe"))
@@ -114,7 +114,6 @@ describe("createSelfHostedVideoMaterialProvider", () => {
     };
     const provider = createSelfHostedVideoMaterialProvider({
       baseUrl: "http://wan-alpha.worker-internal:8000",
-      client,
       runCommand: run,
     });
 
@@ -124,12 +123,14 @@ describe("createSelfHostedVideoMaterialProvider", () => {
       signal,
     );
 
-    expect(calls[0]?.seed).toBe(42);
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body)).seed).toBe(
+      42,
+    );
     expect(material.provenance.seed).toBe(42);
   });
 
   it("rejects the result when ffprobe reports a shape retiming should have fixed", async () => {
-    const client: WanAlphaClient = async () => Uint8Array.from([1]);
+    stubFetch(Uint8Array.from([1]));
     const run: CommandRunner = async (command, args) => {
       const outputPath = args.at(-1) as string;
       if (command.includes("ffprobe"))
@@ -154,7 +155,6 @@ describe("createSelfHostedVideoMaterialProvider", () => {
     };
     const provider = createSelfHostedVideoMaterialProvider({
       baseUrl: "http://wan-alpha.worker-internal:8000",
-      client,
       runCommand: run,
     });
 
@@ -164,12 +164,9 @@ describe("createSelfHostedVideoMaterialProvider", () => {
   });
 
   it("propagates a client failure without inventing a placeholder", async () => {
-    const client: WanAlphaClient = async () => {
-      throw new Error("WAN_ALPHA_REQUEST_FAILED:503");
-    };
+    stubFetch(new Uint8Array(), 503);
     const provider = createSelfHostedVideoMaterialProvider({
       baseUrl: "http://wan-alpha.worker-internal:8000",
-      client,
     });
 
     await expect(produceMaterial(provider, request, signal)).rejects.toThrow(
@@ -207,11 +204,10 @@ describe("createSelfHostedVideoMaterialProvider", () => {
         { cwd: workspace, signal },
       );
       const nativeBytes = await readFile(nativePath);
-      const client: WanAlphaClient = async () => nativeBytes;
+      stubFetch(nativeBytes);
       const sceneCanvas = { width: 64, height: 48, fps: 5, frameCount: 20 };
       const provider = createSelfHostedVideoMaterialProvider({
         baseUrl: "http://wan-alpha.worker-internal:8000",
-        client,
       });
 
       const material = await produceMaterial(

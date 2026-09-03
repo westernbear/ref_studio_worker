@@ -1,40 +1,12 @@
 import { createHash } from "node:crypto";
 import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
-import { z } from "zod";
+import {
+  h264CanvasMismatch,
+  parseFfprobeJson,
+  videoStream,
+} from "./ffprobe-qc.js";
 import { runCommand, type CommandRunner } from "./process-runner.js";
-
-const ProbeSchema = z.object({
-  streams: z.array(
-    z
-      .object({
-        codec_type: z.string(),
-        codec_name: z.string().optional(),
-        pix_fmt: z.string().optional(),
-        width: z.number().int().optional(),
-        height: z.number().int().optional(),
-        avg_frame_rate: z.string().optional(),
-        nb_read_frames: z.string().optional(),
-        color_space: z.string().optional(),
-        color_transfer: z.string().optional(),
-        color_primaries: z.string().optional(),
-      })
-      .passthrough(),
-  ),
-});
-const FrameProbeSchema = z.object({
-  frames: z.array(
-    z
-      .object({
-        media_type: z.literal("video"),
-        pix_fmt: z.string(),
-        color_space: z.string(),
-        color_transfer: z.string(),
-        color_primaries: z.string(),
-      })
-      .passthrough(),
-  ),
-});
 
 export class VideoDecodeError extends Error {
   readonly token = "VIDEO_DECODE_UNSUPPORTED";
@@ -85,11 +57,6 @@ const ownedOutputPath = (directory: string, name: string): string => {
   const path = resolve(directory, name);
   if (!isOwnedPath(directory, path)) throw new VideoDecodeError();
   return path;
-};
-
-const fraction = (value: string | undefined): number => {
-  const [numerator, denominator] = (value ?? "").split("/").map(Number);
-  return numerator && denominator ? numerator / denominator : Number.NaN;
 };
 
 const sha256 = (bytes: Uint8Array): string =>
@@ -147,22 +114,9 @@ export async function decodeVideoAsset(
       ],
       { cwd: directory, signal: input.signal },
     );
-    const parsed = ProbeSchema.parse(JSON.parse(metadata.stdout));
-    const video = parsed.streams.find(
-      (stream) => stream.codec_type === "video",
-    );
-    if (
-      !video ||
-      video.codec_name !== "h264" ||
-      video.pix_fmt !== "yuv420p" ||
-      video.width !== input.canvas.width ||
-      video.height !== input.canvas.height ||
-      fraction(video.avg_frame_rate) !== input.canvas.fps ||
-      Number(video.nb_read_frames) !== input.canvas.frameCount ||
-      video.color_space !== "bt709" ||
-      video.color_transfer !== "bt709" ||
-      video.color_primaries !== "bt709"
-    )
+    const parsed = parseFfprobeJson(metadata.stdout);
+    const video = videoStream(parsed);
+    if (h264CanvasMismatch(video, input.canvas, true))
       throw new VideoDecodeError();
     const frameProbe = await run(
       ffprobe,
@@ -182,10 +136,9 @@ export async function decodeVideoAsset(
       ],
       { cwd: directory, signal: input.signal },
     );
-    const decodedFrame = FrameProbeSchema.parse(JSON.parse(frameProbe.stdout))
-      .frames[0];
+    const decodedFrame = parseFfprobeJson(frameProbe.stdout).frames[0];
     if (
-      !decodedFrame ||
+      decodedFrame?.media_type !== "video" ||
       decodedFrame.pix_fmt !== "yuv420p" ||
       decodedFrame.color_space !== "bt709" ||
       decodedFrame.color_transfer !== "bt709" ||

@@ -1,46 +1,12 @@
 import { stat } from "node:fs/promises";
-import { z } from "zod";
 import type { SceneSpec } from "./contracts/index.js";
+import {
+  mergeDeliveryProbes,
+  validateDeliveryQc,
+} from "./ffprobe-qc.js";
 import type { CommandRunner } from "./process-runner.js";
+import { RESOURCE_BUDGETS } from "./resource-budgets.js";
 import type { ValidatedAudio } from "./audio-decoder.js";
-
-// Keep in lockstep with packages/contracts RESOURCE_BUDGETS.maxFfmpegOutputBytes.
-const MAX_FFMPEG_OUTPUT_BYTES = 2 * 1024 * 1024 * 1024;
-
-const Probe = z.object({
-  format: z.object({ duration: z.string() }),
-  streams: z.array(
-    z.object({
-      codec_type: z.string(),
-      codec_name: z.string(),
-      width: z.number().int().positive().optional(),
-      height: z.number().int().positive().optional(),
-      pix_fmt: z.string().optional(),
-      avg_frame_rate: z.string().optional(),
-      nb_read_frames: z.string().optional(),
-      profile: z.string().optional(),
-      level: z.number().int().optional(),
-      channels: z.number().int().positive().optional(),
-      sample_rate: z.string().optional(),
-    }),
-  ),
-  frames: z.array(
-    z.object({
-      media_type: z.string(),
-      key_frame: z.number().int().min(0).max(1),
-    }),
-  ),
-});
-const ProbeMetadata = Probe.omit({ frames: true });
-const ProbeFrames = Probe.pick({ frames: true });
-const ProbeAudio = Probe.pick({ streams: true });
-
-const fraction = (value: string): number => {
-  const [numerator, denominator] = value.split("/").map(Number);
-  return numerator !== undefined && denominator
-    ? numerator / denominator
-    : Number.NaN;
-};
 
 const validate = (
   metadataRaw: string,
@@ -49,38 +15,11 @@ const validate = (
   canvas: SceneSpec["canvas"],
   audioSource?: ValidatedAudio,
 ): Record<string, unknown> => {
-  const probe = {
-    ...ProbeMetadata.parse(JSON.parse(metadataRaw)),
-    ...ProbeFrames.parse(JSON.parse(framesRaw)),
-  };
-  probe.streams.push(...ProbeAudio.parse(JSON.parse(audioRaw)).streams);
-  const video = probe.streams.find((stream) => stream.codec_type === "video");
-  const audio = probe.streams.find((stream) => stream.codec_type === "audio");
-  const duration = Number(probe.format.duration);
-  const keyFrames = probe.frames
-    .filter((frame) => frame.media_type === "video")
-    .flatMap((frame, index) => (frame.key_frame === 1 ? [index] : []));
-  if (
-    !video ||
-    video.codec_name !== "h264" ||
-    video.profile !== "High" ||
-    video.level !== 41 ||
-    video.pix_fmt !== "yuv420p" ||
-    video.width !== canvas.width ||
-    video.height !== canvas.height ||
-    fraction(video.avg_frame_rate ?? "") !== canvas.fps ||
-    Number(video.nb_read_frames) !== canvas.frameCount ||
-    !audio ||
-    audio.codec_name !== "aac" ||
-    audio.profile !== "LC" ||
-    audio.channels !== 2 ||
-    audio.sample_rate !== "48000" ||
-    keyFrames.some((frame, index) => frame !== index * 60) ||
-    keyFrames.length !== Math.ceil(canvas.frameCount / 60) ||
-    !Number.isFinite(duration) ||
-    Math.abs(duration - canvas.frameCount / canvas.fps) > 0.05
-  )
-    throw new Error("GENERATED_DELIVERY_QC_FAILED");
+  const { video, duration } = validateDeliveryQc(
+    mergeDeliveryProbes(metadataRaw, framesRaw, audioRaw),
+    canvas,
+    { errorToken: "GENERATED_DELIVERY_QC_FAILED" },
+  );
   return {
     status: "PASS",
     width: video.width,
@@ -196,7 +135,7 @@ export async function assembleGeneratedVideo(
   );
   try {
     const muxed = await stat(input.outputPath);
-    if (muxed.size > MAX_FFMPEG_OUTPUT_BYTES)
+    if (muxed.size > RESOURCE_BUDGETS.maxFfmpegOutputBytes)
       throw new Error("RESOURCE_BUDGET_EXCEEDED");
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;

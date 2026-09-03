@@ -1,22 +1,8 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
+import type { Blender3dBudget } from "./resource-budgets.js";
 
-export const BLENDER_3D_BUDGET = {
-  // Keep in lockstep with packages/contracts RESOURCE_BUDGETS.maxBlenderTriangles.
-  maxTriangles: 250_000,
-  maxMaterials: 64,
-  maxTextureDimension: 4096,
-  maxTextures: 32,
-  maxBytes: 64 * 1024 * 1024,
-} as const;
-
-export type Blender3dBudget = Readonly<{
-  maxTriangles: number;
-  maxMaterials: number;
-  maxTextureDimension: number;
-  maxTextures: number;
-  maxBytes: number;
-}>;
+export { BLENDER_3D_BUDGET, type Blender3dBudget } from "./resource-budgets.js";
 
 export type ParsedGlbContract = Readonly<{
   triangles: number;

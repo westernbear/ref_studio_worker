@@ -1,3 +1,5 @@
+import { z } from "zod";
+
 export type EvidenceTrackKind =
   | "bbox"
   | "trajectory"
@@ -19,31 +21,53 @@ export type EvidenceTrack = Readonly<{
   frames: readonly EvidenceTrackFrame[];
 }>;
 
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === "object" && value !== null && !Array.isArray(value);
-const isNumber = (value: unknown): value is number =>
-  typeof value === "number" && Number.isFinite(value);
-const isString = (value: unknown): value is string => typeof value === "string";
+const RecordSchema = z.record(z.string(), z.unknown());
+const Finite = z.number().finite();
+const FrameBoundsSchema = z.object({
+  frame: Finite,
+  x: Finite,
+  y: Finite,
+  width: Finite,
+  height: Finite,
+});
+const ContentWindowSchema = z.object({
+  x: Finite,
+  y: Finite,
+  width: z.number().positive(),
+  height: z.number().positive(),
+});
+const OwnerSchema = z.object({
+  ownerId: z.string(),
+  confidence: Finite.optional(),
+});
+const TrackSchema = z.object({
+  owner: z.string(),
+  geometryRef: z.string(),
+  effects: z.unknown().optional(),
+});
+const OcrCandidateSchema = z.object({
+  frame: Finite,
+  confidence: Finite,
+  text: z.string(),
+  bounds: z.array(z.unknown()).length(4),
+});
+const AudioAnchorSchema = z.object({
+  anchorId: z.unknown().optional(),
+  frame: Finite,
+  owner: z.unknown().optional(),
+  role: z.unknown().optional(),
+  confidence: Finite,
+});
 
-type FrameBounds = Readonly<{
-  frame: number;
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-}>;
+const asRecord = (value: unknown): Record<string, unknown> | null => {
+  const parsed = RecordSchema.safeParse(value);
+  return parsed.success ? parsed.data : null;
+};
+
+type FrameBounds = z.infer<typeof FrameBoundsSchema>;
 const readFrameBounds = (value: unknown): FrameBounds | null => {
-  if (!isRecord(value)) return null;
-  const { frame, x, y, width, height } = value;
-  if (
-    !isNumber(frame) ||
-    !isNumber(x) ||
-    !isNumber(y) ||
-    !isNumber(width) ||
-    !isNumber(height)
-  )
-    return null;
-  return { frame, x, y, width, height };
+  const parsed = FrameBoundsSchema.safeParse(value);
+  return parsed.success ? parsed.data : null;
 };
 // The reference clip may be letterboxed, and the compiler analyses only the
 // content inside it. sceneInput geometry is therefore expressed in
@@ -55,24 +79,14 @@ const readFrameBounds = (value: unknown): FrameBounds | null => {
 const CANVAS_WIDTH = 1080;
 const CANVAS_HEIGHT = 1920;
 
-type ContentWindow = Readonly<{
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-}>;
+type ContentWindow = z.infer<typeof ContentWindowSchema>;
 
 const readContentWindow = (
   bundle: Record<string, unknown>,
 ): ContentWindow | null => {
-  const observed = bundle["observed"];
-  const window = isRecord(observed) ? observed["contentWindow"] : null;
-  if (!isRecord(window)) return null;
-  const { x, y, width, height } = window;
-  if (!isNumber(x) || !isNumber(y) || !isNumber(width) || !isNumber(height))
-    return null;
-  if (width <= 0 || height <= 0) return null;
-  return { x, y, width, height };
+  const observed = asRecord(bundle["observed"]);
+  const parsed = ContentWindowSchema.safeParse(observed?.["contentWindow"]);
+  return parsed.success ? parsed.data : null;
 };
 
 const canvasToFrame = (
@@ -108,10 +122,10 @@ const readGeometryTrack = (
   bundle: Record<string, unknown>,
   geometryRef: string,
 ): readonly FrameBounds[] => {
-  const sceneInput = bundle["sceneInput"];
-  const geometry = isRecord(sceneInput) ? sceneInput["geometry"] : null;
-  const entry = isRecord(geometry) ? geometry[geometryRef] : null;
-  const boundsPerFrame = isRecord(entry) ? entry["boundsPerFrame"] : null;
+  const sceneInput = asRecord(bundle["sceneInput"]);
+  const geometry = asRecord(sceneInput?.["geometry"]);
+  const entry = asRecord(geometry?.[geometryRef]);
+  const boundsPerFrame = entry?.["boundsPerFrame"];
   if (!Array.isArray(boundsPerFrame)) return [];
   const window = readContentWindow(bundle);
   return boundsPerFrame
@@ -126,35 +140,43 @@ const readOwnerConfidence = (
   bundle: Record<string, unknown>,
   ownerId: string,
 ): number => {
-  const sceneInput = bundle["sceneInput"];
-  const owners = isRecord(sceneInput) ? sceneInput["owners"] : null;
+  const sceneInput = asRecord(bundle["sceneInput"]);
+  const owners = sceneInput?.["owners"];
   if (!Array.isArray(owners)) return 1;
-  const owner = owners.find(
-    (item) => isRecord(item) && item["ownerId"] === ownerId,
-  );
-  const confidence = isRecord(owner) ? owner["confidence"] : null;
-  return isNumber(confidence) ? confidence : 1;
+  const owner = owners.find((item) => {
+    const parsed = OwnerSchema.safeParse(item);
+    return parsed.success && parsed.data.ownerId === ownerId;
+  });
+  const parsed = OwnerSchema.safeParse(owner);
+  return parsed.success && parsed.data.confidence !== undefined
+    ? parsed.data.confidence
+    : 1;
+};
+
+const sceneTracks = (
+  bundle: Record<string, unknown>,
+): z.infer<typeof TrackSchema>[] => {
+  const sceneInput = asRecord(bundle["sceneInput"]);
+  const tracks = sceneInput?.["tracks"];
+  if (!Array.isArray(tracks)) return [];
+  return tracks.flatMap((track) => {
+    const parsed = TrackSchema.safeParse(track);
+    return parsed.success ? [parsed.data] : [];
+  });
 };
 
 const bboxAndTrajectoryTracks = (
   bundle: Record<string, unknown>,
 ): EvidenceTrack[] => {
-  const sceneInput = bundle["sceneInput"];
-  const tracks = isRecord(sceneInput) ? sceneInput["tracks"] : null;
-  if (!Array.isArray(tracks)) return [];
   const result: EvidenceTrack[] = [];
-  for (const track of tracks) {
-    if (!isRecord(track)) continue;
-    const owner = track["owner"];
-    const geometryRef = track["geometryRef"];
-    if (!isString(owner) || !isString(geometryRef)) continue;
-    const bounds = readGeometryTrack(bundle, geometryRef);
+  for (const track of sceneTracks(bundle)) {
+    const bounds = readGeometryTrack(bundle, track.geometryRef);
     if (bounds.length === 0) continue;
-    const confidence = readOwnerConfidence(bundle, owner);
+    const confidence = readOwnerConfidence(bundle, track.owner);
     result.push({
-      ownerId: owner,
+      ownerId: track.owner,
       kind: "bbox",
-      label: owner,
+      label: track.owner,
       frames: bounds.map((item) => ({
         frame: item.frame,
         bounds: [item.x, item.y, item.width, item.height],
@@ -162,9 +184,9 @@ const bboxAndTrajectoryTracks = (
       })),
     });
     result.push({
-      ownerId: owner,
+      ownerId: track.owner,
       kind: "trajectory",
-      label: owner,
+      label: track.owner,
       frames: bounds.map((item) => ({
         frame: item.frame,
         point: [item.x + item.width / 2, item.y + item.height / 2],
@@ -176,33 +198,20 @@ const bboxAndTrajectoryTracks = (
 };
 
 const effectTracks = (bundle: Record<string, unknown>): EvidenceTrack[] => {
-  const sceneInput = bundle["sceneInput"];
-  const tracks = isRecord(sceneInput) ? sceneInput["tracks"] : null;
-  if (!Array.isArray(tracks)) return [];
   const result: EvidenceTrack[] = [];
-  for (const track of tracks) {
-    if (!isRecord(track)) continue;
-    const owner = track["owner"];
-    const geometryRef = track["geometryRef"];
-    const effects = track["effects"];
-    if (
-      !isString(owner) ||
-      !isString(geometryRef) ||
-      !Array.isArray(effects) ||
-      effects.length === 0 ||
-      !effects.every(isString)
-    )
-      continue;
-    const bounds = readGeometryTrack(bundle, geometryRef);
+  for (const track of sceneTracks(bundle)) {
+    const effects = z.array(z.string()).safeParse(track.effects);
+    if (!effects.success || effects.data.length === 0) continue;
+    const bounds = readGeometryTrack(bundle, track.geometryRef);
     if (bounds.length === 0) continue;
     result.push({
-      ownerId: owner,
+      ownerId: track.owner,
       kind: "effect",
-      label: effects.join("+"),
+      label: effects.data.join("+"),
       frames: bounds.map((item) => ({
         frame: item.frame,
         bounds: [item.x, item.y, item.width, item.height],
-        confidence: readOwnerConfidence(bundle, owner),
+        confidence: readOwnerConfidence(bundle, track.owner),
       })),
     });
   }
@@ -213,28 +222,24 @@ const effectTracks = (bundle: Record<string, unknown>): EvidenceTrack[] => {
 // dedups/tracks candidates upstream, so this is a light regrouping, not a
 // re-implementation of its tracking logic.
 const ocrTextTracks = (bundle: Record<string, unknown>): EvidenceTrack[] => {
-  const observed = bundle["observed"];
-  const ocr = isRecord(observed) ? observed["ocr"] : null;
-  const candidates = isRecord(ocr) ? ocr["candidates"] : null;
+  const observed = asRecord(bundle["observed"]);
+  const ocr = asRecord(observed?.["ocr"]);
+  const candidates = ocr?.["candidates"];
   if (!Array.isArray(candidates)) return [];
   const window = readContentWindow(bundle);
   const byText = new Map<string, EvidenceTrackFrame[]>();
   for (const candidate of candidates) {
-    if (!isRecord(candidate)) continue;
-    const { frame, confidence, text, bounds } = candidate;
-    const box = readFrameBounds(
-      Array.isArray(bounds) && bounds.length === 4
-        ? {
-            frame,
-            x: bounds[0],
-            y: bounds[1],
-            width: bounds[2],
-            height: bounds[3],
-          }
-        : null,
-    );
-    if (!isNumber(frame) || !isNumber(confidence) || !isString(text) || !box)
-      continue;
+    const parsed = OcrCandidateSchema.safeParse(candidate);
+    if (!parsed.success) continue;
+    const { frame, confidence, text, bounds } = parsed.data;
+    const box = readFrameBounds({
+      frame,
+      x: bounds[0],
+      y: bounds[1],
+      width: bounds[2],
+      height: bounds[3],
+    });
+    if (!box) continue;
     const placed = analysisToFrame(box, window);
     const frames = byText.get(text) ?? [];
     frames.push({
@@ -255,19 +260,24 @@ const ocrTextTracks = (bundle: Record<string, unknown>): EvidenceTrack[] => {
 const audioAnchorTracks = (
   bundle: Record<string, unknown>,
 ): EvidenceTrack[] => {
-  const sceneInput = bundle["sceneInput"];
-  const audio = isRecord(sceneInput) ? sceneInput["audio"] : null;
-  const anchors = isRecord(audio) ? audio["anchors"] : null;
+  const sceneInput = asRecord(bundle["sceneInput"]);
+  const audio = asRecord(sceneInput?.["audio"]);
+  const anchors = audio?.["anchors"];
   if (!Array.isArray(anchors)) return [];
   return anchors
     .map((anchor, index): EvidenceTrack | null => {
-      if (!isRecord(anchor)) return null;
-      const { anchorId, frame, owner, role, confidence } = anchor;
-      if (!isNumber(frame) || !isNumber(confidence)) return null;
+      const parsed = AudioAnchorSchema.safeParse(anchor);
+      if (!parsed.success) return null;
+      const { anchorId, frame, owner, role, confidence } = parsed.data;
       return {
-        ownerId: isString(owner) ? owner : `audio-anchor-${index}`,
+        ownerId: typeof owner === "string" ? owner : `audio-anchor-${index}`,
         kind: "audio-anchor",
-        label: isString(role) ? role : isString(anchorId) ? anchorId : "cue",
+        label:
+          typeof role === "string"
+            ? role
+            : typeof anchorId === "string"
+              ? anchorId
+              : "cue",
         frames: [{ frame, confidence }],
       };
     })
