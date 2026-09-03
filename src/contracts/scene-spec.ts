@@ -390,6 +390,13 @@ const SceneSpecV2Schema = z
   })
   .strict();
 
+// Exported for structured-output calls: OpenAI's response_format rejects a
+// schema whose root is not `type: "object"`, and a discriminated union
+// converts to a rootless `anyOf` ("got 'type: \"None\"'", observed in
+// production). A generateObject call has to name one variant; the union
+// stays the validator for anything read back.
+export { SceneSpecV1Schema, SceneSpecV2Schema };
+
 export const SceneSpecSchema: z.ZodType<SceneSpec> = z.discriminatedUnion(
   "schema",
   [SceneSpecV1Schema, SceneSpecV2Schema],
